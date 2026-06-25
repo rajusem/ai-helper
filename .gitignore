@@ -1,13 +1,16 @@
 # Local reference docs (not committed)
 local-docs/
 
-# Dependencies
-node_modules/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
 
-# Build output
+# Build
 dist/
 build/
-*.tsbuildinfo
 
 # Environment
 .env
@@ -25,9 +28,13 @@ Thumbs.db
 *.swo
 
 # Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
 coverage/
-.nyc_output/
+
+# uv
+uv.lock
 
 # Logs
 *.log
-npm-debug.log*
