@@ -46,6 +46,7 @@ def scan(path, fmt, severity, verbose, disable, fail_on):
         severity_filter=severity,
         verbose=verbose,
         disabled_rules=disabled_rules,
+        fail_on=fail_on,
     )
 
     if fail_on is not None:

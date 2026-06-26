@@ -70,23 +70,56 @@ def _compute_score(issues: list[Issue]) -> int:
     return max(0, 100 - total)
 
 
+CONFIG_FILENAME = ".ai-helper-scan.yaml"
+
+
+def _load_config(target: Path) -> dict:
+    """Load per-project config from .ai-helper-scan.yaml."""
+    config_path = target / CONFIG_FILENAME
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+
+        return yaml.safe_load(config_path.read_text()) or {}
+    except Exception:
+        console.print(
+            f"[yellow]Warning: could not parse {CONFIG_FILENAME}[/yellow]"
+        )
+        return {}
+
+
 def run_scan(
     path: str = ".",
     fmt: str = "table",
     severity_filter: str | None = None,
     verbose: bool = False,
     disabled_rules: set[str] | None = None,
+    fail_on: str | None = None,
 ) -> dict[str, int]:
     """Scan skill and agent files for issues.
 
-    Returns a dict of severity counts: {"warning": N, "suggestion": N, "info": N}.
+    Returns severity counts: {"warning": N, "suggestion": N, "info": N}.
     """
-    empty_counts: dict[str, int] = {"warning": 0, "suggestion": 0, "info": 0}
+    empty_counts: dict[str, int] = {
+        "warning": 0, "suggestion": 0, "info": 0,
+    }
 
     target = Path(path).resolve()
     if not target.exists():
         console.print(f"[bold red]Path not found: {path}[/bold red]")
         return empty_counts
+
+    # Load project config and merge with CLI args (CLI wins)
+    config = _load_config(target)
+    if disabled_rules is None:
+        cfg_disable = config.get("disable", [])
+        if cfg_disable:
+            disabled_rules = {
+                r.strip().upper() for r in cfg_disable
+            }
+    if fail_on is None:
+        fail_on = config.get("fail_on")
 
     files = _discover_files(target)
     if not files:

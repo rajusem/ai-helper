@@ -18,6 +18,7 @@ from ai_helper.scan import (
     _check_token_waste,
     _compute_score,
     _find_duplicate_instructions,
+    _load_config,
     _parse_content_regions,
     _print_sarif,
 )
@@ -891,3 +892,33 @@ class TestOQUAL002ThresholdAndFilename:
         result = ScanResult(file="CodeReview.md")
         _check_output_quality(result, content, lines, filepath)
         assert not any(i.rule_id == "OQUAL002" for i in result.issues)
+
+
+# ── Item 4.2: Config file loading ─────────────────────────────────
+
+
+class TestConfigFile:
+    def test_missing_config_returns_empty(self, tmp_path):
+        config = _load_config(tmp_path)
+        assert config == {}
+
+    def test_valid_config_loaded(self, tmp_path):
+        cfg = tmp_path / ".ai-helper-scan.yaml"
+        cfg.write_text(
+            "disable:\n  - HRISK002\n  - OQUAL001\nfail_on: warning\n"
+        )
+        config = _load_config(tmp_path)
+        assert config["disable"] == ["HRISK002", "OQUAL001"]
+        assert config["fail_on"] == "warning"
+
+    def test_invalid_yaml_returns_empty(self, tmp_path):
+        cfg = tmp_path / ".ai-helper-scan.yaml"
+        cfg.write_text(": : : invalid yaml [[[")
+        config = _load_config(tmp_path)
+        assert config == {}
+
+    def test_empty_config_returns_empty(self, tmp_path):
+        cfg = tmp_path / ".ai-helper-scan.yaml"
+        cfg.write_text("")
+        config = _load_config(tmp_path)
+        assert config == {}
