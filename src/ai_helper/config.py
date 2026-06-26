@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -18,6 +19,58 @@ MODEL_ALIASES = {
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
 }
+
+KNOWN_MODELS = {
+    "claude-opus-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+}
+
+KNOWN_PROVIDERS = {
+    "google-vertex-anthropic",
+    "anthropic",
+    "bedrock",
+}
+
+
+def _validate_model(model: str) -> str | None:
+    """Validate a model ID. Returns a warning message or None if valid."""
+    if model in MODEL_ALIASES:
+        return None
+    if model in KNOWN_MODELS:
+        return None
+
+    # Check provider-prefixed format: provider/model@version
+    if "/" in model:
+        parts = model.split("/", 1)
+        provider = parts[0]
+        rest = parts[1]
+        model_part = rest.split("@")[0] if "@" in rest else rest
+
+        if provider not in KNOWN_PROVIDERS:
+            return f"Unknown provider '{provider}'"
+        if model_part not in KNOWN_MODELS:
+            return f"Unknown model '{model_part}'"
+        if "@" in rest:
+            version = rest.split("@")[1]
+            if version and not re.match(
+                r"^(default|latest|\d{8,10})$", version
+            ):
+                return f"Suspicious version '{version}'"
+        return None
+
+    return f"Unknown model '{model}'"
+
+
+def _confirm_proceed() -> bool:
+    try:
+        answer = console.input("  Continue anyway? [y/N] ").strip().lower()
+        return answer in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def resolve_model(name: str | None) -> str | None:
@@ -66,6 +119,18 @@ def set_config(
 ) -> None:
     resolved_model = resolve_model(model)
     resolved_small = resolve_model(small_model)
+
+    for label, value in [("model", resolved_model), ("small-model", resolved_small)]:
+        if value:
+            warning = _validate_model(value)
+            if warning:
+                console.print(
+                    f"[yellow]Warning: {warning} for --{label}."
+                    " Proceeding anyway — use an alias (opus, sonnet,"
+                    " haiku) or a known model ID.[/yellow]"
+                )
+                if not _confirm_proceed():
+                    return
 
     tools = detect_tools()
     installed = [t for t in tools if t.installed]
