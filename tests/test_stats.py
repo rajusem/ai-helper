@@ -3,10 +3,21 @@
 import json
 import sqlite3
 from datetime import datetime, timezone
+from unittest.mock import patch
 
+from click.testing import CliRunner
+
+from ai_helper.cli import main
 from ai_helper.stats import (
+    SessionStats,
+    ToolStats,
+    _estimate_tokens_inline,
+    _normalize_model_tier,
     _parse_cursor_ts,
     _read_cursor_sessions,
+    show_compare,
+    show_context,
+    show_recommend,
 )
 
 
@@ -126,3 +137,261 @@ class TestReadCursorSessions:
         cutoff = datetime(2020, 1, 1, tzinfo=timezone.utc)
         stats = _read_cursor_sessions(cutoff, db_path=db)
         assert len(stats.sessions) == 0
+
+
+# ── Model normalization tests ──────────────────────────────────────
+
+
+class TestNormalizeModelTier:
+    def test_opus(self):
+        assert _normalize_model_tier("claude-opus-4-6") == "opus"
+        assert _normalize_model_tier("claude-opus-4-8") == "opus"
+
+    def test_sonnet(self):
+        assert _normalize_model_tier("claude-sonnet-4-6") == "sonnet"
+
+    def test_haiku(self):
+        assert _normalize_model_tier("claude-haiku-4-5") == "haiku"
+
+    def test_fable(self):
+        assert _normalize_model_tier("claude-fable-5") == "fable"
+
+    def test_local(self):
+        assert _normalize_model_tier("ollama-llama3") == "local"
+        assert _normalize_model_tier("deepseek-coder") == "local"
+
+    def test_at_default_stripped(self):
+        assert _normalize_model_tier("claude-opus-4-6@default") == "opus"
+        assert _normalize_model_tier("claude-sonnet-4-5@default") == "sonnet"
+
+    def test_unknown(self):
+        assert _normalize_model_tier("gpt-4o") == "other"
+        assert _normalize_model_tier("unknown") == "other"
+
+
+# ── Inline token estimator tests ──────────────────────────────────
+
+
+class TestEstimateTokensInline:
+    def test_basic(self):
+        assert _estimate_tokens_inline("abcd") == 1
+
+    def test_empty(self):
+        assert _estimate_tokens_inline("") == 0
+
+    def test_longer(self):
+        assert _estimate_tokens_inline("a" * 100) == 25
+
+
+# ── Helpers for crafted ToolStats ──────────────────────────────────
+
+
+def _make_opus_session(**overrides) -> SessionStats:
+    defaults = dict(
+        session_id="s1",
+        tool="Claude Code",
+        model="claude-opus-4-6",
+        turns=10,
+        input_tokens=500_000,
+        output_tokens=100_000,
+        cache_read_tokens=200_000,
+        cache_write_tokens=50_000,
+        cost_usd=12.50,
+        started=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        ended=datetime(2026, 6, 1, 0, 30, tzinfo=timezone.utc),
+        duration_minutes=30.0,
+        project="test-project",
+    )
+    defaults.update(overrides)
+    return SessionStats(**defaults)
+
+
+def _make_sonnet_session(**overrides) -> SessionStats:
+    defaults = dict(
+        session_id="s2",
+        tool="Claude Code",
+        model="claude-sonnet-4-6",
+        turns=5,
+        input_tokens=300_000,
+        output_tokens=60_000,
+        cache_read_tokens=100_000,
+        cache_write_tokens=20_000,
+        cost_usd=1.30,
+        started=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        ended=datetime(2026, 6, 2, 0, 15, tzinfo=timezone.utc),
+        duration_minutes=15.0,
+        project="test-project",
+    )
+    defaults.update(overrides)
+    return SessionStats(**defaults)
+
+
+def _mock_collect(tool_stats_list):
+    """Return a patcher that replaces _collect_stats."""
+    return patch(
+        "ai_helper.stats._collect_stats",
+        return_value=tool_stats_list,
+    )
+
+
+# ── stats recommend tests ─────────────────────────────────────────
+
+
+class TestShowRecommend:
+    def test_no_data(self, capsys):
+        with _mock_collect([]):
+            show_recommend()
+        captured = capsys.readouterr().out
+        assert "No session data" in captured
+
+    def test_no_opus_usage(self, capsys):
+        ts = ToolStats(tool="Claude Code", sessions=[_make_sonnet_session()])
+        with _mock_collect([ts]):
+            show_recommend()
+        captured = capsys.readouterr().out
+        assert "No Opus usage" in captured
+
+    def test_what_if_table_shown(self, capsys):
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session(), _make_sonnet_session()],
+        )
+        with _mock_collect([ts]):
+            show_recommend()
+        captured = capsys.readouterr().out
+        assert "What-If Savings" in captured
+        assert "20%" in captured
+        assert "40%" in captured
+        assert "60%" in captured
+        assert "Sonnet instead" in captured
+
+    def test_subscription_caveat(self, capsys):
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session()],
+        )
+        with _mock_collect([ts]):
+            show_recommend()
+        captured = capsys.readouterr().out
+        assert "Flat-rate plans" in captured
+        assert "Max, Team" in captured
+
+
+# ── stats context tests ───────────────────────────────────────────
+
+
+class TestShowContext:
+    def test_no_data(self, capsys):
+        with _mock_collect([]):
+            show_context()
+        captured = capsys.readouterr().out
+        assert "No session data" in captured
+
+    def test_session_counts_shown(self, capsys):
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session(), _make_sonnet_session()],
+        )
+        with _mock_collect([ts]):
+            show_context()
+        captured = capsys.readouterr().out
+        assert "Context Usage" in captured
+        assert "Sessions" in captured
+        # Should show 2 sessions, not turns
+        assert "2" in captured
+
+    def test_uses_sessions_not_turns(self, capsys):
+        """Verify session count (not turn count) is used."""
+        s1 = _make_opus_session(turns=50)
+        s2 = _make_sonnet_session(turns=30)
+        ts = ToolStats(tool="Claude Code", sessions=[s1, s2])
+        with _mock_collect([ts]):
+            show_context()
+        captured = capsys.readouterr().out
+        # Table should show "2" sessions, not "50" or "80" turns
+        assert "Context Usage" in captured
+
+
+# ── stats compare tests ───────────────────────────────────────────
+
+
+class TestShowCompare:
+    def test_no_data(self, capsys):
+        with _mock_collect([]):
+            show_compare()
+        captured = capsys.readouterr().out
+        assert "No session data" in captured
+
+    def test_tiers_shown(self, capsys):
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session(), _make_sonnet_session()],
+        )
+        with _mock_collect([ts]):
+            show_compare()
+        captured = capsys.readouterr().out
+        assert "Cost per Session" in captured
+        assert "Opus" in captured
+        assert "Sonnet" in captured
+
+    def test_no_cost_ratio(self, capsys):
+        """Must NOT contain 'Nx cheaper' language."""
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session(), _make_sonnet_session()],
+        )
+        with _mock_collect([ts]):
+            show_compare()
+        captured = capsys.readouterr().out
+        assert "cheaper" not in captured.lower()
+
+    def test_subscription_caveat(self, capsys):
+        ts = ToolStats(
+            tool="Claude Code",
+            sessions=[_make_opus_session()],
+        )
+        with _mock_collect([ts]):
+            show_compare()
+        captured = capsys.readouterr().out
+        assert "Flat-rate plans" in captured
+
+
+# ── CLI backward compatibility tests ──────────────────────────────
+
+
+class TestStatsCLIBackwardCompat:
+    def test_bare_stats_still_works(self):
+        """ai-helper stats --period 1d should still exit 0."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "--period", "1d"])
+        assert result.exit_code == 0
+
+    def test_stats_recommend_subcommand(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "recommend"])
+        assert result.exit_code == 0
+
+    def test_stats_context_subcommand(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "context"])
+        assert result.exit_code == 0
+
+    def test_stats_compare_subcommand(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "compare"])
+        assert result.exit_code == 0
+
+    def test_stats_help_shows_subcommands(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "--help"])
+        assert result.exit_code == 0
+        assert "recommend" in result.output
+        assert "context" in result.output
+        assert "compare" in result.output
+
+    def test_period_all_warning_in_help(self):
+        """C9: --period help text should mention large histories may be slow."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["stats", "--help"])
+        assert result.exit_code == 0
+        assert "slow" in result.output.lower()

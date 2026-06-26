@@ -16,14 +16,51 @@ from ai_helper.tools import detect_tools
 console = Console()
 
 PRICING = {
+    "claude-opus-4-8": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
+    "claude-opus-4-7": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
     "claude-opus-4-6": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
     "claude-opus-4-5": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "claude-fable-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
     "claude-haiku-4-5": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
 }
 
+# Fallback pricing for unrecognized models (Sonnet-tier rates).
 DEFAULT_PRICING = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+
+# Tier-level pricing for what-if comparisons (per 1M tokens).
+TIER_PRICING = {
+    "opus": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
+    "sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "fable": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+    "haiku": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
+}
+
+
+def _normalize_model_tier(model: str) -> str:
+    """Map a model identifier to its pricing tier.
+
+    Handles ``@default`` suffixes and common model-name patterns.
+    Returns one of: opus, sonnet, haiku, fable, local, other.
+    """
+    name = model.lower().split("@")[0].strip()
+    if "opus" in name:
+        return "opus"
+    if "sonnet" in name:
+        return "sonnet"
+    if "haiku" in name:
+        return "haiku"
+    if "fable" in name:
+        return "fable"
+    if any(tok in name for tok in ("local", "ollama", "llama", "deepseek")):
+        return "local"
+    return "other"
+
+
+def _estimate_tokens_inline(text: str) -> int:
+    """Rough token estimate (4 chars per token). No external imports."""
+    return len(text) // 4
 
 
 @dataclass
@@ -612,5 +649,184 @@ def _print_cost_caveat() -> None:
     console.print(
         "[dim]Note: Cost estimates are approximate, based on published"
         " pricing. Actual billing may differ.[/dim]"
+    )
+    console.print()
+
+
+# ── stats recommend ─────────────────────────────────────────────────
+
+
+def show_recommend(period: str = "7d", tool_filter: str = "all") -> None:
+    """Show what-if cost savings by shifting expensive model usage."""
+    cutoff = _parse_period(period)
+    all_stats = _collect_stats(cutoff, tool_filter)
+
+    if not all_stats:
+        console.print("[bold red]No session data found.[/bold red]")
+        return
+
+    # Aggregate per-tier token totals across all tools.
+    tier_totals: dict[str, dict[str, int]] = {}
+    for ts in all_stats:
+        for s in ts.sessions:
+            tier = _normalize_model_tier(s.model)
+            if tier not in tier_totals:
+                tier_totals[tier] = {
+                    "input": 0, "output": 0,
+                    "cache_read": 0, "cache_write": 0,
+                    "sessions": 0,
+                }
+            tier_totals[tier]["input"] += s.input_tokens
+            tier_totals[tier]["output"] += s.output_tokens
+            tier_totals[tier]["cache_read"] += s.cache_read_tokens
+            tier_totals[tier]["cache_write"] += s.cache_write_tokens
+            tier_totals[tier]["sessions"] += 1
+
+    opus = tier_totals.get("opus")
+    if not opus or opus["sessions"] == 0:
+        console.print(
+            "[yellow]No Opus usage found -- nothing to optimize.[/yellow]"
+        )
+        return
+
+    opus_prices = TIER_PRICING["opus"]
+    sonnet_prices = TIER_PRICING["sonnet"]
+
+    opus_cost = _tier_cost(opus, opus_prices)
+
+    table = Table(title=f"What-If Savings ({period})")
+    table.add_column("Scenario", min_width=38)
+    table.add_column("Opus Cost", justify="right")
+    table.add_column("Shifted Cost", justify="right")
+    table.add_column("Saved", justify="right", style="green")
+
+    for pct in (20, 40, 60):
+        frac = pct / 100
+        kept = _scale_tokens(opus, 1 - frac)
+        shifted = _scale_tokens(opus, frac)
+        new_cost = _tier_cost(kept, opus_prices) + _tier_cost(
+            shifted, sonnet_prices
+        )
+        saved = opus_cost - new_cost
+        table.add_row(
+            f"If {pct}% of Opus turns used Sonnet instead",
+            f"${opus_cost:.2f}",
+            f"${new_cost:.2f}",
+            f"${saved:.2f}",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print(
+        "[dim]Savings apply to API/pay-per-token usage."
+        " Flat-rate plans (Max, Team) are not affected.[/dim]"
+    )
+    console.print()
+
+
+def _scale_tokens(
+    totals: dict[str, int], fraction: float,
+) -> dict[str, int]:
+    """Scale token counts by a fraction."""
+    return {
+        k: int(v * fraction) if k != "sessions" else v
+        for k, v in totals.items()
+    }
+
+
+def _tier_cost(totals: dict[str, int], prices: dict[str, float]) -> float:
+    """Calculate cost from token totals and per-1M prices."""
+    cost = (
+        totals["input"] * prices["input"]
+        + totals["output"] * prices["output"]
+        + totals["cache_read"] * prices["cache_read"]
+        + totals["cache_write"] * prices["cache_write"]
+    ) / 1_000_000
+    return round(cost, 4)
+
+
+# ── stats context ──────────────────────────────────────────────────
+
+
+def show_context(period: str = "7d", tool_filter: str = "all") -> None:
+    """Show context-window usage per tool (session count, not turns)."""
+    cutoff = _parse_period(period)
+    all_stats = _collect_stats(cutoff, tool_filter)
+
+    if not all_stats:
+        console.print("[bold red]No session data found.[/bold red]")
+        return
+
+    table = Table(title=f"Context Usage ({period})")
+    table.add_column("Tool")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Avg Input Tokens", justify="right")
+    table.add_column("Avg Output Tokens", justify="right")
+    table.add_column("Est. Avg Context (tokens)", justify="right")
+
+    for ts in all_stats:
+        n_sessions = len(ts.sessions)
+        if n_sessions == 0:
+            continue
+        avg_in = ts.total_input // n_sessions
+        avg_out = ts.total_output // n_sessions
+        avg_ctx = avg_in + avg_out
+        table.add_row(
+            ts.tool,
+            str(n_sessions),
+            _format_tokens(avg_in),
+            _format_tokens(avg_out),
+            _format_tokens(avg_ctx),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+# ── stats compare ──────────────────────────────────────────────────
+
+
+def show_compare(period: str = "7d", tool_filter: str = "all") -> None:
+    """Show plain cost-per-session comparison across model tiers."""
+    cutoff = _parse_period(period)
+    all_stats = _collect_stats(cutoff, tool_filter)
+
+    if not all_stats:
+        console.print("[bold red]No session data found.[/bold red]")
+        return
+
+    # Group sessions by tier.
+    tier_sessions: dict[str, list[SessionStats]] = {}
+    for ts in all_stats:
+        for s in ts.sessions:
+            tier = _normalize_model_tier(s.model)
+            tier_sessions.setdefault(tier, []).append(s)
+
+    table = Table(title=f"Cost per Session by Model Tier ({period})")
+    table.add_column("Tier")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Total Cost", justify="right")
+    table.add_column("Cost / Session", justify="right")
+
+    for tier in ("opus", "sonnet", "fable", "haiku", "other", "local"):
+        sessions = tier_sessions.get(tier)
+        if not sessions:
+            continue
+        total = sum(s.cost_usd for s in sessions)
+        per = total / len(sessions) if sessions else 0
+        table.add_row(
+            tier.capitalize(),
+            str(len(sessions)),
+            f"${total:.2f}",
+            f"${per:.4f}",
+        )
+
+    console.print()
+    console.print(table)
+    console.print(
+        "\n[dim]Savings apply to API/pay-per-token usage."
+        " Flat-rate plans (Max, Team) are not affected.[/dim]\n"
     )
     console.print()

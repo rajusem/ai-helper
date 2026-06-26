@@ -106,14 +106,49 @@ def scan(path, fmt, severity, verbose, disable, fail_on,
             sys.exit(1)
 
 
-@main.command()
-@click.option("--period", default="7d", help="Time period (7d, 30d, all)")
+@main.group(invoke_without_command=True)
+@click.option(
+    "--period", default="7d",
+    help="Time period (7d, 30d, all). Note: 'all' scans full history and may be slow.",
+)
 @click.option("--tool", default="all", help="Filter by tool (claude, opencode, cursor, all)")
-def stats(period, tool):
+@click.pass_context
+def stats(ctx, period, tool):
     """Show usage insights and analytics."""
-    from ai_helper.stats import show_stats
+    ctx.ensure_object(dict)
+    ctx.obj["period"] = period
+    ctx.obj["tool"] = tool
+    if ctx.invoked_subcommand is None:
+        from ai_helper.stats import show_stats
 
-    show_stats(period=period, tool_filter=tool)
+        show_stats(period=period, tool_filter=tool)
+
+
+@stats.command()
+@click.pass_context
+def recommend(ctx):
+    """What-if cost savings by shifting Opus usage to Sonnet."""
+    from ai_helper.stats import show_recommend
+
+    show_recommend(period=ctx.obj["period"], tool_filter=ctx.obj["tool"])
+
+
+@stats.command()
+@click.pass_context
+def context(ctx):
+    """Context-window usage per tool (session count, not turns)."""
+    from ai_helper.stats import show_context
+
+    show_context(period=ctx.obj["period"], tool_filter=ctx.obj["tool"])
+
+
+@stats.command()
+@click.pass_context
+def compare(ctx):
+    """Plain cost-per-session comparison across model tiers."""
+    from ai_helper.stats import show_compare
+
+    show_compare(period=ctx.obj["period"], tool_filter=ctx.obj["tool"])
 
 
 @main.group("config")
