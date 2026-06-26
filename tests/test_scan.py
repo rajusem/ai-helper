@@ -1084,3 +1084,10 @@ class TestRuleSystem:
         f.write_text("# Test\ncontent")
         result = _analyze_file(f, tmp_path)
         assert not any(i.rule_id == "CUSTOM_BAD" for i in result.issues)
+        # The error should be reported as a RULE_ERR info-severity issue
+        err_issues = [i for i in result.issues if i.rule_id == "RULE_ERR"]
+        assert len(err_issues) == 1
+        assert "CUSTOM_BAD" in err_issues[0].message
+        assert "RuntimeError" in err_issues[0].message
+        assert "boom" in err_issues[0].message
+        assert err_issues[0].severity == "info"

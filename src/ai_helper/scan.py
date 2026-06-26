@@ -176,12 +176,14 @@ def _save_baseline(baseline: dict, path: Path) -> None:
         dir=path.parent, suffix=".tmp", prefix=".baseline-"
     )
     try:
-        os.write(fd, data.encode())
-        os.close(fd)
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
         os.replace(tmp, str(path))
     except Exception:
-        os.close(fd)
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 
@@ -422,8 +424,14 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
                 issues = rule.check(ctx)
                 if issues:
                     result.issues.extend(issues)
-            except Exception:
-                pass
+            except Exception as exc:
+                result.issues.append(Issue(
+                    category="internal",
+                    severity="info",
+                    message=f"Rule {rule.id} raised {type(exc).__name__}: {exc}",
+                    rule_id="RULE_ERR",
+                    line=0,
+                ))
 
     result.score = _compute_score(result.issues)
 

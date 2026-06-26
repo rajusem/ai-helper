@@ -131,6 +131,8 @@ def _read_claude_sessions(cutoff: datetime) -> ToolStats:
     if not projects_dir.exists():
         return stats
 
+    home_slug = str(Path.home()).replace(os.sep, "-").lstrip("-")
+
     for jsonl_path in projects_dir.rglob("*.jsonl"):
         mtime = datetime.fromtimestamp(
             os.path.getmtime(jsonl_path), tz=timezone.utc
@@ -141,7 +143,7 @@ def _read_claude_sessions(cutoff: datetime) -> ToolStats:
         session = _parse_claude_session(jsonl_path)
         if session and session.started and session.started >= cutoff:
             project_dir = jsonl_path.parent.name
-            session.project = project_dir.replace("-Users-rzalavad-", "~/")
+            session.project = project_dir.replace(f"-{home_slug}-", "~/")
             stats.sessions.append(session)
 
     stats.sessions.sort(

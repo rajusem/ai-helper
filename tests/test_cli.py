@@ -217,6 +217,50 @@ def test_fail_on_with_disable_of_only_warning(tmp_path):
     assert result_with_disable.exit_code == 0
 
 
+def test_severity_valid_single_value():
+    """--severity with a valid single value should be accepted."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "warning"])
+    assert result.exit_code == 0
+
+
+def test_severity_valid_comma_separated():
+    """--severity with valid comma-separated values should be accepted."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "warning,suggestion"])
+    assert result.exit_code == 0
+
+
+def test_severity_invalid_value_rejected():
+    """--severity with an invalid value should fail with an error message."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "critical"])
+    assert result.exit_code != 0
+    assert "Invalid severity" in result.output
+
+
+def test_severity_mixed_valid_invalid_rejected():
+    """--severity with a mix of valid and invalid values should fail."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "warning,garbage"])
+    assert result.exit_code != 0
+    assert "Invalid severity" in result.output
+
+
+def test_severity_case_insensitive():
+    """--severity should accept uppercase values."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "WARNING"])
+    assert result.exit_code == 0
+
+
+def test_severity_empty_after_split():
+    """--severity with trailing comma should not crash."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", ".", "--severity", "warning,"])
+    assert result.exit_code == 0
+
+
 def test_fail_on_help_shows_option():
     """--fail-on should appear in scan --help."""
     runner = CliRunner()

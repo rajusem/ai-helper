@@ -13,10 +13,29 @@ def main():
     """ai-helper: work smarter with AI coding tools."""
 
 
+_VALID_SEVERITIES = {"warning", "suggestion", "info"}
+
+
+def _validate_severity(ctx, param, value):
+    if value is None:
+        return value
+    for s in value.split(","):
+        s = s.strip().lower()
+        if not s:
+            continue
+        if s not in _VALID_SEVERITIES:
+            raise click.BadParameter(
+                f"Invalid severity '{s}'. "
+                f"Choose from: {', '.join(sorted(_VALID_SEVERITIES))}"
+            )
+    return value
+
+
 @main.command()
 @click.argument("path", default=".")
 @click.option("--format", "fmt", type=click.Choice(["table", "json", "sarif"]), default="table")
-@click.option("--severity", default=None, help="Filter by severity (warning,suggestion,info)")
+@click.option("--severity", default=None, callback=_validate_severity,
+              help="Filter by severity (warning,suggestion,info)")
 @click.option(
     "--verbose", "-v", is_flag=True, default=False,
     help="Show all issues (no top-N truncation)",
