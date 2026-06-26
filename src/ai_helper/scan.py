@@ -128,13 +128,16 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     result = ScanResult(file=rel_path, token_estimate=tokens)
     lines = content.splitlines()
 
-    _check_size(result, content, tokens)
+    _check_size(result, content, tokens, lines)
     _check_structure(result, content, lines)
     _check_description_quality(result, content)
     _check_token_waste(result, content, lines)
+    _check_hedging_and_filler(result, content)
     _check_hallucination_risks(result, content, lines)
     _check_output_quality(result, content, lines)
     _check_failure_mode_framing(result, content, lines)
+    _check_nested_references(result, content, lines)
+    _check_redundant_context(result, content, filepath)
     _check_best_practices(result, content, lines)
 
     penalty = sum(
@@ -146,21 +149,41 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     return result
 
 
-def _check_size(result: ScanResult, content: str, tokens: int) -> None:
-    if tokens > 3000:
+def _check_size(
+    result: ScanResult, content: str, tokens: int, lines: list[str]
+) -> None:
+    line_count = len(lines)
+    if line_count > 500:
         result.issues.append(Issue(
             category="token-cost",
             severity="warning",
-            message=f"File is ~{tokens} tokens — costs this much on EVERY turn",
-            fix="Split into focused sections or move rarely-needed content"
-            " to separate files that agents read on demand",
+            message=f"File is {line_count} lines — exceeds 500-line"
+            " limit recommended by Anthropic and Cursor",
+            fix="Split into focused sections. Move reference material"
+            " to separate files loaded on demand",
         ))
-    elif tokens > 1500:
+    elif tokens > 5000:
+        result.issues.append(Issue(
+            category="token-cost",
+            severity="warning",
+            message=f"File is ~{tokens} tokens — costs this on EVERY turn",
+            fix="Split into focused sections or move rarely-needed"
+            " content to separate files read on demand",
+        ))
+    elif tokens > 2000:
         result.issues.append(Issue(
             category="token-cost",
             severity="suggestion",
             message=f"File is ~{tokens} tokens — consider trimming",
             fix="Remove content not needed in 80%+ of sessions",
+        ))
+    elif tokens < 150 and line_count > 5:
+        result.issues.append(Issue(
+            category="token-cost",
+            severity="info",
+            message=f"File is only ~{tokens} tokens — may be too sparse",
+            fix="Ensure key instructions are present."
+            " Very short skills may lack necessary constraints",
         ))
 
 
@@ -233,6 +256,25 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
                 " Move workflow steps into the skill body.",
             ))
             break
+
+    if re.search(r"\b(you should|you will|you are|I will|I am)\b", desc, re.I):
+        result.issues.append(Issue(
+            category="description",
+            severity="warning",
+            message="Description uses first/second person",
+            fix="Write in third person — descriptions are injected"
+            " into the system prompt, and inconsistent POV causes"
+            " discovery problems (Anthropic best practices)",
+        ))
+
+    if len(desc) < 10:
+        result.issues.append(Issue(
+            category="description",
+            severity="suggestion",
+            message="Description is very short — may not trigger"
+            " automatic skill discovery",
+            fix="Include what the skill does AND when to use it",
+        ))
 
     if not re.search(r"\b(use when|use for|invoke when)\b", desc, re.I):
         if len(desc) > 50:
@@ -440,6 +482,147 @@ def _find_conflicting_instructions(content: str) -> str | None:
                 and re.search(pattern_b, content, re.I)):
             return "both verbose/thorough AND concise/brief guidance found"
     return None
+
+
+def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
+    """Hedging and filler tokens waste context. Based on cclint's
+    karpathy rule and AgentLinter's compressible-padding detection."""
+    hedging = [
+        "try to", "where appropriate", "when possible",
+        "if you can", "consider", "might want to",
+        "it would be good to", "ideally",
+    ]
+    found_hedging = [
+        h for h in hedging
+        if content.lower().count(h) >= 2
+    ]
+    if found_hedging:
+        result.issues.append(Issue(
+            category="token-cost",
+            severity="suggestion",
+            message="Hedging language repeated: "
+            + ", ".join(f"'{h}'" for h in found_hedging[:3]),
+            fix="Replace with direct imperatives."
+            " 'Verify X' not 'Try to verify X where appropriate'",
+        ))
+
+    filler_phrases = [
+        "you are a helpful assistant",
+        "thank you",
+        "great job",
+        "i appreciate",
+    ]
+    for phrase in filler_phrases:
+        if phrase in content.lower():
+            result.issues.append(Issue(
+                category="token-cost",
+                severity="suggestion",
+                message=f"Filler phrase: '{phrase}'",
+                fix="Remove — agents don't need politeness tokens."
+                " Every word in a skill file costs tokens on every turn",
+            ))
+            break
+
+    long_paragraphs = 0
+    current_len = 0
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            current_len += len(stripped.split())
+        else:
+            if current_len > 80:
+                long_paragraphs += 1
+            current_len = 0
+    if long_paragraphs >= 2:
+        result.issues.append(Issue(
+            category="token-cost",
+            severity="suggestion",
+            message=f"{long_paragraphs} paragraphs over 80 words",
+            fix="Break into shorter paragraphs or bullet points."
+            " Dense prose is harder for agents to parse accurately",
+        ))
+
+
+def _check_nested_references(
+    result: ScanResult, content: str, lines: list[str]
+) -> None:
+    """File references should be one level deep. Nested references
+    cause agents to partially read files with head -100."""
+    ref_pattern = re.compile(
+        r"(?:read|see|refer to|check|load|reference)\s+"
+        r"[`'\"]?([a-zA-Z0-9_./-]+\.\w+)[`'\"]?",
+        re.IGNORECASE,
+    )
+    refs = ref_pattern.findall(content)
+    if len(refs) > 10:
+        result.issues.append(Issue(
+            category="structure",
+            severity="suggestion",
+            message=f"File references {len(refs)} other files",
+            fix="Keep references one level deep from SKILL.md."
+            " Deeply nested refs cause agents to partially read"
+            " files (head -100), losing information",
+        ))
+
+
+def _check_redundant_context(
+    result: ScanResult, content: str, filepath: Path
+) -> None:
+    """Detect content the agent can infer from the project."""
+    project_root = filepath.parent
+    while project_root.parent != project_root:
+        if (project_root / "package.json").exists():
+            break
+        if (project_root / "pyproject.toml").exists():
+            break
+        if (project_root / ".git").exists():
+            break
+        project_root = project_root.parent
+
+    tech_mentions = re.findall(
+        r"\b(?:we use|built with|using|our stack includes)\s+"
+        r"([A-Za-z][A-Za-z0-9.]+)",
+        content, re.IGNORECASE,
+    )
+    if not tech_mentions:
+        return
+
+    pkg_json = project_root / "package.json"
+    pyproject = project_root / "pyproject.toml"
+    inferable = set()
+
+    if pkg_json.exists():
+        try:
+            import json
+            data = json.loads(pkg_json.read_text())
+            deps = set(data.get("dependencies", {}).keys())
+            deps |= set(data.get("devDependencies", {}).keys())
+            inferable = {d.lower() for d in deps}
+        except Exception:
+            pass
+    elif pyproject.exists():
+        try:
+            text = pyproject.read_text()
+            inferable = {
+                m.lower()
+                for m in re.findall(r'"([a-zA-Z][a-zA-Z0-9_-]+)"', text)
+            }
+        except Exception:
+            pass
+
+    redundant = [
+        t for t in tech_mentions if t.lower() in inferable
+    ]
+    if redundant:
+        result.issues.append(Issue(
+            category="token-cost",
+            severity="suggestion",
+            message="Redundant tech mentions: "
+            + ", ".join(f"'{t}'" for t in redundant[:3]),
+            fix="Remove — agent can infer these from"
+            " package.json/pyproject.toml. Stating 'we use X'"
+            " when X is in dependencies wastes tokens",
+        ))
 
 
 def _check_best_practices(
