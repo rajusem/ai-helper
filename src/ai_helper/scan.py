@@ -318,14 +318,14 @@ def run_scan(
         for issue in r.issues:
             counts[issue.severity] = counts.get(issue.severity, 0) + 1
 
+    # Recompute scores from all issues (before display filter)
+    for r in results:
+        r.score = _compute_score(r.issues)
+
     if severity_filter:
         allowed = {s.strip().lower() for s in severity_filter.split(",")}
         for r in results:
             r.issues = [i for i in r.issues if i.severity in allowed]
-
-    # Recompute scores after filtering
-    for r in results:
-        r.score = _compute_score(r.issues)
 
     if report:
         _print_report(results)
@@ -603,7 +603,19 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
             ))
             break
 
-    if re.search(r"\b(you should|you will|you are|I will|I am)\b", desc, re.I):
+    _desc003_flagged = False
+    for _m in re.finditer(
+        r"\b(you should|you will|you are|I will|I am)\b", desc, re.I
+    ):
+        phrase = _m.group(1).lower()
+        if phrase == "you are":
+            # Skip "you are" when preceded by conditional words
+            prefix = desc[:_m.start()].lower().rstrip()
+            if prefix.endswith(("when", "if", "whenever", "whether")):
+                continue
+        _desc003_flagged = True
+        break
+    if _desc003_flagged:
         result.issues.append(Issue(
             category="description",
             severity="warning",
@@ -823,14 +835,17 @@ def _check_failure_mode_framing(
 def _find_conflicting_instructions(content: str) -> str | None:
     pairs = [
         (r"\balways\b.{5,40}\b(detailed|verbose|thorough)\b",
-         r"\b(concise|brief|short|minimal)\b"),
+         r"\b(concise|brief|short|minimal)\b",
+         "both verbose/thorough AND concise/brief guidance found"),
         (r"\bnever\b.{5,30}\b(skip|omit)\b",
-         r"\b(only when|if needed|optional)\b"),
+         r"\b(only when|if needed|optional)\b",
+         "both 'never skip/omit' AND 'only when needed/optional'"
+         " guidance found"),
     ]
-    for pattern_a, pattern_b in pairs:
+    for pattern_a, pattern_b, msg in pairs:
         if (re.search(pattern_a, content, re.I)
                 and re.search(pattern_b, content, re.I)):
-            return "both verbose/thorough AND concise/brief guidance found"
+            return msg
     return None
 
 
@@ -924,7 +939,9 @@ def _check_redundant_context(
 ) -> None:
     """Detect content the agent can infer from the project."""
     project_root = filepath.parent
-    while project_root.parent != project_root:
+    for _ in range(10):
+        if project_root.parent == project_root:
+            break
         if (project_root / "package.json").exists():
             break
         if (project_root / "pyproject.toml").exists():
@@ -1035,7 +1052,9 @@ def _check_broken_references(
     refs = ref_pattern.findall(content_text)
 
     project_root = filepath.parent
-    while project_root.parent != project_root:
+    for _ in range(10):
+        if project_root.parent == project_root:
+            break
         if (project_root / ".git").exists():
             break
         project_root = project_root.parent

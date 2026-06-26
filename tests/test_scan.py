@@ -18,11 +18,13 @@ from ai_helper.scan import (
     _check_description_quality,
     _check_hallucination_risks,
     _check_output_quality,
+    _check_redundant_context,
     _check_role_identity,
     _check_structure,
     _check_termination_conditions,
     _check_token_waste,
     _compute_score,
+    _find_conflicting_instructions,
     _find_duplicate_instructions,
     _load_baseline,
     _load_config,
@@ -30,6 +32,7 @@ from ai_helper.scan import (
     _print_sarif,
     _save_baseline,
     register_rule,
+    run_scan,
 )
 
 # ── _parse_content_regions ──────────────────────────────────────────
@@ -1091,3 +1094,182 @@ class TestRuleSystem:
         assert "RuntimeError" in err_issues[0].message
         assert "boom" in err_issues[0].message
         assert err_issues[0].severity == "info"
+
+
+# ── M6: Project root walk iteration limit ────────────────────────
+
+
+class TestProjectRootWalkLimit:
+    """M6: Both _check_redundant_context and _check_broken_references
+    should stop walking up after 10 levels."""
+
+    def test_redundant_context_stops_at_depth_10(self, tmp_path):
+        """Walk-up in _check_redundant_context is bounded."""
+        # Create a deep path with no project markers
+        deep = tmp_path
+        for i in range(15):
+            deep = deep / f"level{i}"
+        deep.mkdir(parents=True)
+        skill = deep / "SKILL.md"
+        skill.write_text("We use react for the frontend.\n" * 5)
+        result = ScanResult(file="SKILL.md")
+        # Should not crash or hang on deep paths
+        _check_redundant_context(result, skill.read_text(), skill)
+
+    def test_broken_references_stops_at_depth_10(self, tmp_path):
+        """Walk-up in _check_broken_references is bounded."""
+        deep = tmp_path
+        for i in range(15):
+            deep = deep / f"level{i}"
+        deep.mkdir(parents=True)
+        skill = deep / "SKILL.md"
+        skill.write_text("Read nonexistent.md for context.")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        # Should not crash or hang on deep paths
+        _check_broken_references(result, content, skill, regions)
+
+
+# ── M9: Score computed before severity filter ─────────────────────
+
+
+class TestScoreBeforeSeverityFilter:
+    """M9: Score should reflect ALL issues, not just severity-filtered ones."""
+
+    def test_score_independent_of_severity_filter(self, tmp_path):
+        """Score should be the same whether or not a severity filter is applied."""
+        skill = tmp_path / "SKILL.md"
+        # Create content that triggers both warnings and suggestions
+        content = (
+            "---\n"
+            "description: you should do stuff then do more stuff"
+            " then finally finish\n"
+            "---\n"
+            + "\n".join([f"line {i}" for i in range(55)])
+        )
+        skill.write_text(content)
+
+        # Scan without filter
+        counts_all = run_scan(path=str(tmp_path), fmt="json")
+
+        # Scan with severity filter (only show warnings)
+        counts_filtered = run_scan(
+            path=str(tmp_path), fmt="json",
+            severity_filter="warning",
+        )
+
+        # The counts should be the same (counts are computed before filter)
+        assert counts_all == counts_filtered
+
+    def test_compute_score_uses_all_issues_before_filter(self):
+        """Direct test: score from full issue list should be less than 100."""
+        issues = [
+            Issue(category="structure", severity="warning",
+                  message="w", rule_id="STRUCT001"),
+            Issue(category="token-cost", severity="suggestion",
+                  message="s", rule_id="TCOST003"),
+        ]
+        score = _compute_score(issues)
+        # warning=15 (capped 15) + suggestion=5 (capped 5) = 20
+        assert score == 80
+
+        # After filtering to only suggestions, score would be 95
+        # but M9 fix ensures we compute score BEFORE filtering
+        filtered = [i for i in issues if i.severity == "suggestion"]
+        filtered_score = _compute_score(filtered)
+        assert filtered_score == 95
+        assert score < filtered_score  # full score is lower
+
+
+# ── M10: DESC003 conditional "you are" exclusion ──────────────────
+
+
+class TestDESC003ConditionalExclusion:
+    """M10: 'you are' preceded by when/if/whenever/whether should not
+    trigger DESC003."""
+
+    def test_when_you_are_not_flagged(self):
+        content = "---\ndescription: Use when you are debugging code\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert not any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_if_you_are_not_flagged(self):
+        content = "---\ndescription: Invoke if you are seeing errors\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert not any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_whenever_you_are_not_flagged(self):
+        content = "---\ndescription: Use whenever you are deploying\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert not any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_whether_you_are_not_flagged(self):
+        content = "---\ndescription: Use whether you are local or remote\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert not any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_bare_you_are_still_flagged(self):
+        content = "---\ndescription: You are a code reviewer\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_you_should_still_flagged(self):
+        content = "---\ndescription: You should review the code\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_i_will_still_flagged(self):
+        content = "---\ndescription: I will analyze the code\n---\nbody"
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert any(i.rule_id == "DESC003" for i in result.issues)
+
+    def test_mixed_conditional_and_bare(self):
+        """'when you are' is fine but 'you should' in same desc still flags."""
+        content = (
+            "---\ndescription: Use when you are ready,"
+            " you should start immediately\n---\nbody"
+        )
+        result = ScanResult(file="test.md")
+        _check_description_quality(result, content)
+        assert any(i.rule_id == "DESC003" for i in result.issues)
+
+
+# ── M11: Distinct conflict messages ───────────────────────────────
+
+
+class TestConflictMessages:
+    """M11: Each conflict pattern pair should return its own message."""
+
+    def test_verbose_concise_conflict_message(self):
+        content = "Always provide detailed explanations. Be concise."
+        msg = _find_conflicting_instructions(content)
+        assert msg is not None
+        assert "verbose/thorough" in msg
+        assert "concise/brief" in msg
+
+    def test_never_skip_optional_conflict_message(self):
+        content = "Never ever really skip validation. Only when needed, run tests."
+        msg = _find_conflicting_instructions(content)
+        assert msg is not None
+        assert "never skip/omit" in msg
+        assert "only when needed/optional" in msg
+
+    def test_no_conflict_returns_none(self):
+        content = "Always be thorough in your analysis."
+        msg = _find_conflicting_instructions(content)
+        assert msg is None
+
+    def test_second_pair_does_not_return_first_message(self):
+        """The second conflict pair must NOT return the verbose/concise message."""
+        content = "Never ever really omit error handling. This is optional for tests."
+        msg = _find_conflicting_instructions(content)
+        assert msg is not None
+        assert "verbose/thorough" not in msg

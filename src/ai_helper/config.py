@@ -171,5 +171,21 @@ def _read_json(path: Path) -> dict:
 
 
 def _write_json(path: Path, data: dict) -> None:
+    import os
+    import tempfile
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    data_str = json.dumps(data, indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(
+        dir=path.parent, suffix=".tmp", prefix=".config-"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data_str)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

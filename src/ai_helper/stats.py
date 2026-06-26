@@ -96,10 +96,24 @@ def _parse_period(period: str) -> datetime:
     if period == "all":
         return datetime(2020, 1, 1, tzinfo=timezone.utc)
     if period.endswith("d"):
-        days = int(period[:-1])
+        try:
+            days = int(period[:-1])
+        except ValueError:
+            console.print(
+                f"[yellow]Warning: invalid period '{period}',"
+                " using 7d[/yellow]"
+            )
+            return now - timedelta(days=7)
         return now - timedelta(days=days)
     if period.endswith("w"):
-        weeks = int(period[:-1])
+        try:
+            weeks = int(period[:-1])
+        except ValueError:
+            console.print(
+                f"[yellow]Warning: invalid period '{period}',"
+                " using 7d[/yellow]"
+            )
+            return now - timedelta(days=7)
         return now - timedelta(weeks=weeks)
     return now - timedelta(days=7)
 

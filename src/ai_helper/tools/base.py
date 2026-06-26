@@ -53,15 +53,7 @@ class ToolDetector:
         return info
 
     def _find_binary(self) -> str | None:
-        path = shutil.which(self.binary_name)
-        if path:
-            return path
-        result = subprocess.run(
-            ["which", self.binary_name], capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-        return None
+        return shutil.which(self.binary_name)
 
     def _get_version(self, binary_path: str) -> str | None:
         try:
