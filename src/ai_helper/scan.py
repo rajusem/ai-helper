@@ -7,6 +7,7 @@ hallucination, and more consistent output.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,7 @@ def _compute_score(issues: list[Issue]) -> int:
 
 
 CONFIG_FILENAME = ".ai-helper-scan.yaml"
+BASELINE_FILENAME = ".ai-helper-scan-baseline.json"
 
 
 def _load_config(target: Path) -> dict:
@@ -89,6 +91,74 @@ def _load_config(target: Path) -> dict:
         return {}
 
 
+def _baseline_key(issue: Issue) -> str:
+    """Stable key for baseline matching: rule_id + hash of message."""
+    import hashlib
+
+    msg_hash = hashlib.sha256(issue.message.encode()).hexdigest()[:12]
+    return f"{issue.rule_id}:{msg_hash}"
+
+
+def _build_baseline(
+    results: list[ScanResult], scan_path: str
+) -> dict:
+    from datetime import datetime, timezone
+
+    findings: dict[str, dict] = {}
+    for r in results:
+        for issue in r.issues:
+            key = _baseline_key(issue)
+            findings[key] = {
+                "file": r.file,
+                "rule_id": issue.rule_id,
+                "severity": issue.severity,
+                "message": issue.message,
+            }
+    return {
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scan_path": scan_path,
+        "findings": findings,
+    }
+
+
+def _save_baseline(baseline: dict, path: Path) -> None:
+    import os
+    import tempfile
+
+    data = json.dumps(baseline, indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(
+        dir=path.parent, suffix=".tmp", prefix=".baseline-"
+    )
+    try:
+        os.write(fd, data.encode())
+        os.close(fd)
+        os.replace(tmp, str(path))
+    except Exception:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+
+
+def _load_baseline(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or data.get("version") != 1:
+            console.print(
+                "[yellow]Baseline version mismatch — showing all"
+                " findings[/yellow]"
+            )
+            return {}
+        return data
+    except (json.JSONDecodeError, OSError):
+        console.print(
+            "[yellow]Corrupted baseline — showing all findings[/yellow]"
+        )
+        return {}
+
+
 def run_scan(
     path: str = ".",
     fmt: str = "table",
@@ -96,6 +166,9 @@ def run_scan(
     verbose: bool = False,
     disabled_rules: set[str] | None = None,
     fail_on: str | None = None,
+    save_baseline: bool = False,
+    diff_baseline: bool = False,
+    baseline_path: str | None = None,
 ) -> dict[str, int]:
     """Scan skill and agent files for issues.
 
@@ -142,15 +215,56 @@ def run_scan(
         result = _analyze_file(filepath, target)
         results.append(result)
 
-    # Order: disable -> count severities -> filter display -> score
+    # Order: disable -> baseline -> count severities -> filter -> score
     if disabled_rules:
         normed = {r.strip().upper() for r in disabled_rules}
         for r in results:
             r.issues = [i for i in r.issues if i.rule_id not in normed]
 
-    # Count severities after --disable but before --severity display filter.
-    # This ensures disabled rules do not trigger --fail-on, but the cosmetic
-    # --severity display filter does not hide issues from --fail-on.
+    # Resolve baseline path
+    bl_dir = target if target.is_dir() else target.parent
+    bl_path = Path(baseline_path) if baseline_path else (
+        bl_dir / BASELINE_FILENAME
+    )
+
+    # Save baseline (after disable, before diff)
+    if save_baseline:
+        baseline = _build_baseline(results, str(target))
+        _save_baseline(baseline, bl_path)
+        total = len(baseline.get("findings", {}))
+        console.print(
+            f"Baseline saved to [bold]{bl_path}[/bold]"
+            f" ({total} finding{'s' if total != 1 else ''})."
+            " Commit this file to share with your team."
+        )
+        return empty_counts
+
+    # Diff against baseline
+    if diff_baseline:
+        old = _load_baseline(bl_path)
+        if not old:
+            if not bl_path.exists():
+                console.print(
+                    f"[bold red]No baseline found at {bl_path}."
+                    " Run --save-baseline first.[/bold red]"
+                )
+                return empty_counts
+        old_keys = set(old.get("findings", {}).keys())
+        suppressed = 0
+        for r in results:
+            before = len(r.issues)
+            r.issues = [
+                i for i in r.issues
+                if _baseline_key(i) not in old_keys
+            ]
+            suppressed += before - len(r.issues)
+        if suppressed:
+            console.print(
+                f"  Baseline: {suppressed} known finding"
+                f"{'s' if suppressed != 1 else ''} suppressed"
+            )
+
+    # Count severities after disable+baseline, before display filter
     counts: dict[str, int] = {"warning": 0, "suggestion": 0, "info": 0}
     for r in results:
         for issue in r.issues:

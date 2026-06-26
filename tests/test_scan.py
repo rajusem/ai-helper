@@ -7,6 +7,8 @@ from ai_helper.scan import (
     Issue,
     ScanResult,
     _analyze_file,
+    _baseline_key,
+    _build_baseline,
     _check_broken_references,
     _check_compound_instructions,
     _check_description_quality,
@@ -18,9 +20,11 @@ from ai_helper.scan import (
     _check_token_waste,
     _compute_score,
     _find_duplicate_instructions,
+    _load_baseline,
     _load_config,
     _parse_content_regions,
     _print_sarif,
+    _save_baseline,
 )
 
 # ── _parse_content_regions ──────────────────────────────────────────
@@ -922,3 +926,80 @@ class TestConfigFile:
         cfg.write_text("")
         config = _load_config(tmp_path)
         assert config == {}
+
+
+# ── Item 4.3: Baseline ───────────────────────────────────────────
+
+
+class TestBaseline:
+    def test_baseline_key_stable(self):
+        issue = Issue(
+            category="test", severity="warning",
+            message="Test message", rule_id="TEST001",
+        )
+        k1 = _baseline_key(issue)
+        k2 = _baseline_key(issue)
+        assert k1 == k2
+        assert k1.startswith("TEST001:")
+
+    def test_build_and_save_baseline(self, tmp_path):
+        results = [ScanResult(
+            file="test.md", token_estimate=100,
+            issues=[Issue(
+                category="test", severity="warning",
+                message="bad", rule_id="TEST001",
+            )],
+        )]
+        bl = _build_baseline(results, str(tmp_path))
+        assert bl["version"] == 1
+        assert len(bl["findings"]) == 1
+
+        bl_path = tmp_path / ".ai-helper-scan-baseline.json"
+        _save_baseline(bl, bl_path)
+        assert bl_path.exists()
+
+        loaded = _load_baseline(bl_path)
+        assert loaded["version"] == 1
+        assert len(loaded["findings"]) == 1
+
+    def test_load_missing_baseline_returns_empty(self, tmp_path):
+        bl_path = tmp_path / "nope.json"
+        assert _load_baseline(bl_path) == {}
+
+    def test_load_corrupted_baseline_returns_empty(self, tmp_path):
+        bl_path = tmp_path / "bad.json"
+        bl_path.write_text("{invalid json")
+        assert _load_baseline(bl_path) == {}
+
+    def test_load_wrong_version_returns_empty(self, tmp_path):
+        bl_path = tmp_path / "old.json"
+        bl_path.write_text('{"version": 99}')
+        assert _load_baseline(bl_path) == {}
+
+    def test_diff_hides_baselined_issues(self, tmp_path):
+        from ai_helper.scan import run_scan
+
+        skill = tmp_path / "AGENTS.md"
+        skill.write_text("\n".join([f"line {i}" for i in range(55)]))
+
+        # First scan: save baseline
+        run_scan(path=str(tmp_path), save_baseline=True)
+        bl_path = tmp_path / ".ai-helper-scan-baseline.json"
+        assert bl_path.exists()
+
+        # Second scan with diff: known issues suppressed
+        counts = run_scan(path=str(tmp_path), diff_baseline=True)
+        total = sum(counts.values())
+        assert total == 0
+
+    def test_mutual_exclusivity_in_cli(self):
+        from click.testing import CliRunner
+
+        from ai_helper.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["scan", ".", "--save-baseline", "--diff"]
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output

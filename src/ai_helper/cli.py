@@ -30,15 +30,34 @@ def main():
     "fail_on",
     type=click.Choice(["warning", "suggestion", "info"]),
     default=None,
-    help="Exit with code 1 if any issues at this severity or higher are found (for CI)",
+    help="Exit 1 if issues at this severity or above (for CI)",
 )
-def scan(path, fmt, severity, verbose, disable, fail_on):
+@click.option(
+    "--save-baseline", is_flag=True, default=False,
+    help="Save current findings as baseline for future --diff",
+)
+@click.option(
+    "--diff", "diff_baseline", is_flag=True, default=False,
+    help="Show only NEW findings not in the saved baseline",
+)
+@click.option(
+    "--baseline-path", default=None,
+    help="Override baseline file path (default: .ai-helper-scan-baseline.json)",
+)
+def scan(path, fmt, severity, verbose, disable, fail_on,
+         save_baseline, diff_baseline, baseline_path):
     """Scan skill and agent files for issues."""
     from ai_helper.scan import SEVERITY_ORDER, run_scan
 
+    if save_baseline and diff_baseline:
+        click.echo("Error: --save-baseline and --diff are mutually exclusive")
+        sys.exit(1)
+
     disabled_rules = None
     if disable:
-        disabled_rules = {r.strip().upper() for r in disable.split(",") if r.strip()}
+        disabled_rules = {
+            r.strip().upper() for r in disable.split(",") if r.strip()
+        }
 
     counts = run_scan(
         path=path,
@@ -47,6 +66,9 @@ def scan(path, fmt, severity, verbose, disable, fail_on):
         verbose=verbose,
         disabled_rules=disabled_rules,
         fail_on=fail_on,
+        save_baseline=save_baseline,
+        diff_baseline=diff_baseline,
+        baseline_path=baseline_path,
     )
 
     if fail_on is not None:
