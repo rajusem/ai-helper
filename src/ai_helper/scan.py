@@ -17,6 +17,11 @@ from rich.table import Table
 
 console = Console()
 
+SEVERITY_WEIGHT = {"warning": 15, "suggestion": 5, "info": 1}
+CATEGORY_PENALTY_CAP = 15
+
+SEVERITY_ORDER = {"warning": 0, "suggestion": 1, "info": 2}
+
 SKILL_PATTERNS = [
     "SKILL.md",
     "CLAUDE.md",
@@ -44,6 +49,7 @@ class Issue:
     message: str
     fix: str = ""
     line: int | None = None
+    rule_id: str = ""
 
 
 @dataclass
@@ -54,11 +60,24 @@ class ScanResult:
     score: int = 100
 
 
+def _compute_score(issues: list[Issue]) -> int:
+    """Compute score with severity-weighted penalties capped per category."""
+    by_category: dict[str, int] = {}
+    for issue in issues:
+        w = SEVERITY_WEIGHT.get(issue.severity, 1)
+        by_category[issue.category] = by_category.get(issue.category, 0) + w
+    total = sum(min(p, CATEGORY_PENALTY_CAP) for p in by_category.values())
+    return max(0, 100 - total)
+
+
 def run_scan(
     path: str = ".",
     fmt: str = "table",
     severity_filter: str | None = None,
+    verbose: bool = False,
+    disabled_rules: set[str] | None = None,
 ) -> None:
+    """Scan skill and agent files for issues."""
     target = Path(path).resolve()
     if not target.exists():
         console.print(f"[bold red]Path not found: {path}[/bold red]")
@@ -85,15 +104,27 @@ def run_scan(
         result = _analyze_file(filepath, target)
         results.append(result)
 
+    # Order of operations: disable rules -> filter by severity -> score -> display
+    if disabled_rules:
+        normed = {r.strip().upper() for r in disabled_rules}
+        for r in results:
+            r.issues = [i for i in r.issues if i.rule_id not in normed]
+
     if severity_filter:
         allowed = {s.strip().lower() for s in severity_filter.split(",")}
         for r in results:
             r.issues = [i for i in r.issues if i.severity in allowed]
 
+    # Recompute scores after filtering
+    for r in results:
+        r.score = _compute_score(r.issues)
+
     if fmt == "json":
         _print_json(results)
+    elif fmt == "sarif":
+        _print_sarif(results)
     else:
-        _print_results(results)
+        _print_results(results, verbose=verbose)
 
 
 def _discover_files(root: Path) -> list[Path]:
@@ -134,6 +165,7 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
         result.issues.append(Issue(
             category="structure", severity="warning",
             message=f"File could not be read: {e}",
+            rule_id="STRUCT001",
         ))
         return result
 
@@ -146,6 +178,7 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
             severity="warning",
             message="File contains non-UTF-8 bytes",
             fix="Convert file to UTF-8 encoding",
+            rule_id="STRUCT002",
         ))
 
     lines = content.splitlines()
@@ -163,11 +196,7 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     _check_redundant_context(result, content, filepath)
     _check_best_practices(result, content, lines)
 
-    penalty = sum(
-        3 if i.severity == "warning" else 1
-        for i in result.issues
-    )
-    result.score = max(0, 100 - penalty * 5)
+    result.score = _compute_score(result.issues)
 
     return result
 
@@ -228,6 +257,7 @@ def _check_size(
             " limit recommended by Anthropic and Cursor",
             fix="Split into focused sections. Move reference material"
             " to separate files loaded on demand",
+            rule_id="TCOST001",
         ))
     elif tokens > 5000:
         result.issues.append(Issue(
@@ -236,6 +266,7 @@ def _check_size(
             message=f"File is ~{tokens} tokens — costs this on EVERY turn",
             fix="Split into focused sections or move rarely-needed"
             " content to separate files read on demand",
+            rule_id="TCOST002",
         ))
     elif tokens > 2000:
         result.issues.append(Issue(
@@ -243,6 +274,7 @@ def _check_size(
             severity="suggestion",
             message=f"File is ~{tokens} tokens — consider trimming",
             fix="Remove content not needed in 80%+ of sessions",
+            rule_id="TCOST003",
         ))
     elif tokens < 150 and line_count > 5:
         result.issues.append(Issue(
@@ -251,6 +283,7 @@ def _check_size(
             message=f"File is only ~{tokens} tokens — may be too sparse",
             fix="Ensure key instructions are present."
             " Very short skills may lack necessary constraints",
+            rule_id="TCOST004",
         ))
 
 
@@ -270,6 +303,7 @@ def _check_structure(
             message="Long file with no markdown headers",
             fix="Add ## headers to organize content — helps agents"
             " navigate and reduces misinterpretation",
+            rule_id="STRUCT003",
         ))
 
     if content.startswith("---"):
@@ -280,6 +314,7 @@ def _check_structure(
                 severity="warning",
                 message="Frontmatter opened but never closed",
                 fix="Add closing --- after frontmatter block",
+                rule_id="STRUCT004",
             ))
 
 
@@ -309,6 +344,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
             " agent may follow it instead of reading the skill body",
             fix="Keep description under ~100 chars with trigger"
             " conditions only: 'Use when...' not a workflow summary",
+            rule_id="DESC001",
         ))
 
     workflow_signals = [
@@ -326,6 +362,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
                 " not a trigger condition",
                 fix="Rewrite as 'Use when...' trigger."
                 " Move workflow steps into the skill body.",
+                rule_id="DESC002",
             ))
             break
 
@@ -337,6 +374,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
             fix="Write in third person — descriptions are injected"
             " into the system prompt, and inconsistent POV causes"
             " discovery problems (Anthropic best practices)",
+            rule_id="DESC003",
         ))
 
     if len(desc) < 10:
@@ -346,6 +384,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
             message="Description is very short — may not trigger"
             " automatic skill discovery",
             fix="Include what the skill does AND when to use it",
+            rule_id="DESC004",
         ))
 
     if not re.search(r"\b(use when|use for|invoke when)\b", desc, re.I):
@@ -357,6 +396,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
                 " this skill",
                 fix="Start with 'Use when...' so agents (and humans)"
                 " know the trigger condition",
+                rule_id="DESC005",
             ))
 
 
@@ -375,6 +415,7 @@ def _check_token_waste(
                 message=f"Line {i + 1} is {len(line)} chars — long lines waste tokens",
                 fix="Break into shorter sentences for clarity",
                 line=i + 1,
+                rule_id="TCOST005",
             ))
             break  # only report first
 
@@ -398,6 +439,7 @@ def _check_token_waste(
                 f" {len(matches)} times",
                 fix="Use direct imperatives instead —"
                 " 'Verify X' not 'Please make sure to verify X'",
+                rule_id="TCOST006",
             ))
             break
 
@@ -409,6 +451,7 @@ def _check_token_waste(
             message=f"Near-duplicate instructions found ({duplicates} pairs)",
             fix="Remove redundant instructions — agents read everything,"
             " repeating wastes tokens",
+            rule_id="TCOST007",
         ))
 
 
@@ -448,6 +491,7 @@ def _check_hallucination_risks(
                 message=f"Vague instruction: '{label}'",
                 fix="Replace with specific criteria — vague instructions"
                 " let agents hallucinate what 'best' or 'appropriate' means",
+                rule_id="HRISK001",
             ))
             break
 
@@ -463,6 +507,7 @@ def _check_hallucination_risks(
             message="No output format specified",
             fix="Define expected output format (JSON schema, markdown"
             " template, or example) to constrain agent responses",
+            rule_id="HRISK002",
         ))
 
     has_constraints = bool(re.search(
@@ -478,6 +523,7 @@ def _check_hallucination_risks(
             fix="Add explicit 'do NOT' rules for common failure modes"
             " — agents follow positive instructions better with"
             " guardrails",
+            rule_id="HRISK003",
         ))
 
 
@@ -495,6 +541,7 @@ def _check_output_quality(
             message="No examples provided",
             fix="Add 1-2 examples of expected output — examples are the"
             " most effective way to guide agent behavior",
+            rule_id="OQUAL001",
         ))
 
     has_verification = bool(re.search(
@@ -508,6 +555,7 @@ def _check_output_quality(
             message="No verification steps",
             fix="Add verification gates — 'verify X before proceeding'"
             " prevents false completion claims",
+            rule_id="OQUAL002",
         ))
 
 
@@ -533,6 +581,7 @@ def _check_failure_mode_framing(
             fix="Balance 'do NOT X' with 'instead do Y' —"
             " agents need to know what TO do, not just what to avoid."
             " Prohibitions alone can cause over-cautious behavior",
+            rule_id="FRAME001",
         ))
 
     conflicting = _find_conflicting_instructions(content)
@@ -543,6 +592,7 @@ def _check_failure_mode_framing(
             message=f"Potentially conflicting instructions: {conflicting}",
             fix="Resolve contradictions — conflicting instructions"
             " cause unpredictable agent behavior",
+            rule_id="FRAME002",
         ))
 
 
@@ -580,6 +630,7 @@ def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
             + ", ".join(f"'{h}'" for h in found_hedging[:3]),
             fix="Replace with direct imperatives."
             " 'Verify X' not 'Try to verify X where appropriate'",
+            rule_id="TCOST008",
         ))
 
     filler_phrases = [
@@ -596,6 +647,7 @@ def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
                 message=f"Filler phrase: '{phrase}'",
                 fix="Remove — agents don't need politeness tokens."
                 " Every word in a skill file costs tokens on every turn",
+                rule_id="TCOST009",
             ))
             break
 
@@ -616,6 +668,7 @@ def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
             message=f"{long_paragraphs} paragraphs over 80 words",
             fix="Break into shorter paragraphs or bullet points."
             " Dense prose is harder for agents to parse accurately",
+            rule_id="TCOST010",
         ))
 
 
@@ -638,6 +691,7 @@ def _check_nested_references(
             fix="Keep references one level deep from SKILL.md."
             " Deeply nested refs cause agents to partially read"
             " files (head -100), losing information",
+            rule_id="STRUCT005",
         ))
 
 
@@ -698,6 +752,7 @@ def _check_redundant_context(
             fix="Remove — agent can infer these from"
             " package.json/pyproject.toml. Stating 'we use X'"
             " when X is in dependencies wastes tokens",
+            rule_id="TCOST011",
         ))
 
 
@@ -717,6 +772,7 @@ def _check_best_practices(
                     message="No model specified in frontmatter",
                     fix="Add 'model: sonnet' or 'model: opus' to match"
                     " task complexity — saves cost on simple tasks",
+                    rule_id="BPRAC001",
                 ))
 
     if re.search(r"(step \d|phase \d|stage \d)", lower):
@@ -732,10 +788,14 @@ def _check_best_practices(
                 fix="Add failure protocol — what should the agent do"
                 " when a step fails? Without this, agents retry"
                 " endlessly and waste tokens",
+                rule_id="BPRAC002",
             ))
 
 
-def _print_results(results: list[ScanResult]) -> None:
+def _print_results(
+    results: list[ScanResult], verbose: bool = False
+) -> None:
+    top_n = None if verbose else 3
     total_issues = sum(len(r.issues) for r in results)
     total_tokens = sum(r.token_estimate for r in results)
 
@@ -753,20 +813,44 @@ def _print_results(results: list[ScanResult]) -> None:
             console.print(f"  {header}  [green]no issues[/green]")
             continue
 
+        # Sort by severity: warning > suggestion > info
+        sorted_issues = sorted(
+            result.issues,
+            key=lambda i: SEVERITY_ORDER.get(i.severity, 99),
+        )
+
+        display_issues = sorted_issues if top_n is None else sorted_issues[:top_n]
+
         lines = []
-        for issue in result.issues:
+        for issue in display_issues:
             sev_style = {
                 "warning": "yellow",
                 "suggestion": "cyan",
                 "info": "dim",
             }.get(issue.severity, "dim")
 
+            rule_tag = f" {issue.rule_id}" if issue.rule_id else ""
             lines.append(
                 f"[{sev_style}]{issue.severity.upper():10}[/{sev_style}]"
-                f" [{issue.category}] {issue.message}"
+                f" [{issue.category}]{rule_tag} {issue.message}"
             )
             if issue.fix:
                 lines.append(f"           [dim]Fix: {issue.fix}[/dim]")
+
+        # Add truncation summary with severity breakdown
+        if top_n is not None and len(sorted_issues) > top_n:
+            from collections import Counter
+            sev_counts = Counter(i.severity for i in sorted_issues)
+            breakdown = ", ".join(
+                f"{sev_counts[s]} {s}"
+                for s in ["warning", "suggestion", "info"]
+                if sev_counts.get(s)
+            )
+            lines.append(
+                f"\n[dim]{top_n} of {len(sorted_issues)} shown"
+                f" ({breakdown})"
+                f" -- use -v to see all[/dim]"
+            )
 
         console.print(Panel(
             "\n".join(lines),
@@ -802,6 +886,7 @@ def _print_json(results: list[ScanResult]) -> None:
                     "severity": i.severity,
                     "message": i.message,
                     "fix": i.fix,
+                    "rule_id": i.rule_id,
                 }
                 for i in r.issues
             ],
@@ -809,3 +894,63 @@ def _print_json(results: list[ScanResult]) -> None:
         for r in results
     ]
     console.print_json(json.dumps(output, indent=2))
+
+
+def _print_sarif(results: list[ScanResult]) -> None:
+    import json
+
+    from ai_helper import __version__
+
+    sarif_level = {
+        "warning": "warning",
+        "suggestion": "note",
+        "info": "note",
+    }
+
+    sarif_results = []
+    for r in results:
+        for issue in r.issues:
+            msg = issue.message
+            if issue.fix:
+                msg = f"{msg}. Fix: {issue.fix}"
+
+            result_obj: dict = {
+                "ruleId": issue.rule_id,
+                "level": sarif_level.get(issue.severity, "note"),
+                "message": {"text": msg},
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": r.file,
+                                "uriBaseId": "%SRCROOT%",
+                            },
+                        },
+                    },
+                ],
+            }
+
+            if issue.line is not None:
+                result_obj["locations"][0]["physicalLocation"]["region"] = {
+                    "startLine": issue.line,
+                }
+
+            sarif_results.append(result_obj)
+
+    sarif = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "ai-helper",
+                        "version": __version__,
+                    },
+                },
+                "results": sarif_results,
+            },
+        ],
+    }
+
+    print(json.dumps(sarif, indent=2))

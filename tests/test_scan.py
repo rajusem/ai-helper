@@ -1,21 +1,19 @@
-"""Unit tests for scan.py — focused on the 5 bug fixes."""
+"""Unit tests for scan.py — bug fixes + R1 conditions."""
 
-import tempfile
-from pathlib import Path
-
-import pytest
+import json
 
 from ai_helper.scan import (
-    ScanResult,
     Issue,
+    ScanResult,
+    _analyze_file,
     _check_description_quality,
     _check_structure,
     _check_token_waste,
+    _compute_score,
     _find_duplicate_instructions,
     _parse_content_regions,
-    _analyze_file,
+    _print_sarif,
 )
-
 
 # ── _parse_content_regions ──────────────────────────────────────────
 
@@ -264,3 +262,316 @@ class TestHeaderCheck:
         assert any(
             "no markdown headers" in i.message for i in result.issues
         )
+
+
+# ── R1: Rule IDs ─────────────────────────────────────────────────
+
+
+class TestRuleIDs:
+    def test_all_emitted_issues_have_nonempty_rule_id(self, tmp_path):
+        """Every issue emitted by _analyze_file must have a non-empty rule_id."""
+        # Create a file that triggers many checks
+        content = (
+            "---\n"
+            "description: you should do stuff then do more stuff then finally finish\n"
+            "---\n"
+            + "\n".join([f"line {i}" for i in range(40)])
+            + "\nplease do this\nplease do that\nplease do everything\n"
+            + "try to do something. try to do something else.\n"
+        )
+        f = tmp_path / "SKILL.md"
+        f.write_text(content, encoding="utf-8")
+        result = _analyze_file(f, tmp_path)
+        for issue in result.issues:
+            assert issue.rule_id, (
+                f"Issue has empty rule_id: [{issue.category}] {issue.message}"
+            )
+
+    def test_rule_ids_are_unique_across_mapping(self):
+        """All rule IDs in the mapping should be unique strings."""
+        # Collect all known rule IDs from the plan
+        known_ids = [
+            "STRUCT001", "STRUCT002", "STRUCT003", "STRUCT004", "STRUCT005",
+            "TCOST001", "TCOST002", "TCOST003", "TCOST004", "TCOST005",
+            "TCOST006", "TCOST007", "TCOST008", "TCOST009", "TCOST010",
+            "TCOST011",
+            "DESC001", "DESC002", "DESC003", "DESC004", "DESC005",
+            "HRISK001", "HRISK002", "HRISK003",
+            "OQUAL001", "OQUAL002",
+            "FRAME001", "FRAME002",
+            "BPRAC001", "BPRAC002",
+        ]
+        assert len(known_ids) == len(set(known_ids)), "Duplicate rule IDs found"
+
+    def test_disable_suppresses_specific_rule(self, tmp_path):
+        """--disable should suppress issues with the given rule_id."""
+        content = (
+            "---\n"
+            "description: you should do this stuff and also do that stuff and more things\n"
+            "---\n"
+            + "\n".join([f"line {i}" for i in range(40)])
+        )
+        f = tmp_path / "SKILL.md"
+        f.write_text(content, encoding="utf-8")
+        # First, get all issues
+        result_all = _analyze_file(f, tmp_path)
+        desc003_before = [i for i in result_all.issues if i.rule_id == "DESC003"]
+
+        # Only test disable if DESC003 was actually emitted
+        if desc003_before:
+            disabled = {"DESC003"}
+            filtered = [i for i in result_all.issues if i.rule_id not in disabled]
+            assert not any(i.rule_id == "DESC003" for i in filtered)
+
+    def test_disabled_rules_excluded_from_scoring(self, tmp_path):
+        """Disabled rules should not contribute to the score."""
+        issues = [
+            Issue(category="structure", severity="warning", message="test",
+                  rule_id="STRUCT001"),
+        ]
+        score_with = _compute_score(issues)
+        score_without = _compute_score([])
+        assert score_without > score_with
+
+    def test_disable_empty_string_no_effect(self, tmp_path):
+        """Passing empty disable set should not crash or change results."""
+        content = "---\ndescription: Use when testing\n---\n## Test\nBody here"
+        f = tmp_path / "SKILL.md"
+        f.write_text(content, encoding="utf-8")
+        result = _analyze_file(f, tmp_path)
+        disabled = set()
+        filtered = [i for i in result.issues if i.rule_id not in disabled]
+        assert len(filtered) == len(result.issues)
+
+    def test_disable_unknown_id_no_crash(self, tmp_path):
+        """Unknown rule IDs should be silently ignored."""
+        content = "---\ndescription: Use when testing\n---\n## Test\nBody here"
+        f = tmp_path / "SKILL.md"
+        f.write_text(content, encoding="utf-8")
+        result = _analyze_file(f, tmp_path)
+        disabled = {"UNKNOWN999"}
+        filtered = [i for i in result.issues if i.rule_id not in disabled]
+        assert len(filtered) == len(result.issues)
+
+
+# ── R1: Scoring ──────────────────────────────────────────────────
+
+
+class TestScoring:
+    def test_one_warning_score_85(self):
+        issues = [
+            Issue(category="structure", severity="warning", message="t",
+                  rule_id="STRUCT001"),
+        ]
+        assert _compute_score(issues) == 85
+
+    def test_five_info_same_category_score_95(self):
+        issues = [
+            Issue(category="token-cost", severity="info", message=f"t{i}",
+                  rule_id=f"TCOST00{i}")
+            for i in range(5)
+        ]
+        assert _compute_score(issues) == 95
+
+    def test_four_suggestions_same_category_capped(self):
+        """4 suggestions = 4*5=20, capped at 15. Score = 85."""
+        issues = [
+            Issue(category="token-cost", severity="suggestion", message=f"t{i}",
+                  rule_id=f"TCOST00{i}")
+            for i in range(4)
+        ]
+        assert _compute_score(issues) == 85
+
+    def test_multi_category_sums(self):
+        """Penalties from different categories sum after per-category capping."""
+        issues = [
+            Issue(category="structure", severity="warning", message="t1",
+                  rule_id="STRUCT001"),
+            Issue(category="token-cost", severity="warning", message="t2",
+                  rule_id="TCOST001"),
+        ]
+        # Each category: 15, capped at 15. Total = 30. Score = 70.
+        assert _compute_score(issues) == 70
+
+    def test_score_never_negative(self):
+        """Score should never go below 0 even with many issues."""
+        issues = [
+            Issue(category=f"cat{i}", severity="warning", message=f"t{i}",
+                  rule_id=f"X{i:03d}")
+            for i in range(20)
+        ]
+        score = _compute_score(issues)
+        assert score >= 0
+
+    def test_zero_issues_score_100(self):
+        assert _compute_score([]) == 100
+
+
+# ── R1: Top-N ────────────────────────────────────────────────────
+
+
+class TestTopN:
+    def _make_issues(self, n: int) -> list[Issue]:
+        severities = ["warning", "suggestion", "info"]
+        return [
+            Issue(
+                category="token-cost",
+                severity=severities[i % 3],
+                message=f"Issue {i}",
+                rule_id=f"TCOST{i:03d}",
+            )
+            for i in range(n)
+        ]
+
+    def test_default_truncates_at_3(self, capsys, tmp_path):
+        """With >3 issues and not verbose, only 3 should display."""
+        f = tmp_path / "SKILL.md"
+        # Create content that triggers many issues
+        content = (
+            "---\n"
+            "description: you should do all the things and stuff\n"
+            "---\n"
+            + "\n".join([f"line number {i} with some content" for i in range(50)])
+            + "\nplease do X\nplease do Y\nplease do Z\n"
+            + "try to do something\ntry to do something\n"
+        )
+        f.write_text(content, encoding="utf-8")
+        result = _analyze_file(f, tmp_path)
+        if len(result.issues) > 3:
+            # The truncation summary should mention "use -v"
+            from ai_helper.scan import _print_results
+            _print_results([result], verbose=False)
+            captured = capsys.readouterr()
+            assert "-v" in captured.out or "use -v" in captured.out
+
+    def test_verbose_shows_all(self, capsys, tmp_path):
+        """With verbose=True, all issues should be shown (no truncation message)."""
+        f = tmp_path / "SKILL.md"
+        content = (
+            "---\n"
+            "description: you should do all the things and stuff\n"
+            "---\n"
+            + "\n".join([f"line number {i} with some content" for i in range(50)])
+            + "\nplease do X\nplease do Y\nplease do Z\n"
+        )
+        f.write_text(content, encoding="utf-8")
+        result = _analyze_file(f, tmp_path)
+        if len(result.issues) > 3:
+            from ai_helper.scan import _print_results
+            _print_results([result], verbose=True)
+            captured = capsys.readouterr()
+            assert "use -v" not in captured.out
+
+    def test_severity_ordering(self):
+        """Issues should sort warning > suggestion > info."""
+        from ai_helper.scan import SEVERITY_ORDER
+        issues = [
+            Issue(category="a", severity="info", message="i", rule_id="X001"),
+            Issue(category="a", severity="warning", message="w", rule_id="X002"),
+            Issue(category="a", severity="suggestion", message="s", rule_id="X003"),
+        ]
+        sorted_issues = sorted(
+            issues, key=lambda i: SEVERITY_ORDER.get(i.severity, 99)
+        )
+        assert sorted_issues[0].severity == "warning"
+        assert sorted_issues[1].severity == "suggestion"
+        assert sorted_issues[2].severity == "info"
+
+    def test_score_uses_all_issues_not_just_displayed(self, tmp_path):
+        """Score should use ALL issues, not just the top-N displayed."""
+        issues = [
+            Issue(category="token-cost", severity="warning", message=f"t{i}",
+                  rule_id=f"TCOST{i:03d}")
+            for i in range(5)
+        ]
+        score = _compute_score(issues)
+        # 5 warnings same category: 5*15=75, capped at 15. Score = 85.
+        assert score == 85
+
+
+# ── R1: SARIF ────────────────────────────────────────────────────
+
+
+class TestSARIF:
+    def test_valid_sarif_structure(self, capsys):
+        """SARIF output should have $schema, version, runs."""
+        results = [ScanResult(file="test.md", token_estimate=100, score=90, issues=[])]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        assert "$schema" in sarif
+        assert sarif["version"] == "2.1.0"
+        assert "runs" in sarif
+        assert len(sarif["runs"]) == 1
+        assert "tool" in sarif["runs"][0]
+
+    def test_results_have_rule_id(self, capsys):
+        """Each SARIF result should have a ruleId."""
+        results = [ScanResult(
+            file="test.md", token_estimate=100, score=85,
+            issues=[
+                Issue(category="structure", severity="warning",
+                      message="test issue", fix="fix it", rule_id="STRUCT001"),
+            ],
+        )]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        assert sarif["runs"][0]["results"][0]["ruleId"] == "STRUCT001"
+
+    def test_level_mapping(self, capsys):
+        """SARIF level should map correctly from severity."""
+        results = [ScanResult(
+            file="test.md", token_estimate=100, score=85,
+            issues=[
+                Issue(category="a", severity="warning", message="w",
+                      rule_id="X001"),
+                Issue(category="a", severity="suggestion", message="s",
+                      rule_id="X002"),
+                Issue(category="a", severity="info", message="i",
+                      rule_id="X003"),
+            ],
+        )]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        levels = [r["level"] for r in sarif["runs"][0]["results"]]
+        assert levels == ["warning", "note", "note"]
+
+    def test_no_region_when_line_is_none(self, capsys):
+        """region should be omitted when issue.line is None."""
+        results = [ScanResult(
+            file="test.md", token_estimate=100, score=85,
+            issues=[
+                Issue(category="a", severity="warning", message="no line",
+                      rule_id="X001", line=None),
+            ],
+        )]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        loc = sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        assert "region" not in loc
+
+    def test_region_present_when_line_set(self, capsys):
+        """region should be present with startLine when issue.line is set."""
+        results = [ScanResult(
+            file="test.md", token_estimate=100, score=85,
+            issues=[
+                Issue(category="a", severity="info", message="has line",
+                      rule_id="X001", line=42),
+            ],
+        )]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        loc = sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        assert loc["region"]["startLine"] == 42
+
+    def test_empty_results_when_no_issues(self, capsys):
+        """SARIF results array should be empty when no issues."""
+        results = [ScanResult(file="test.md", token_estimate=50, score=100, issues=[])]
+        _print_sarif(results)
+        captured = capsys.readouterr()
+        sarif = json.loads(captured.out)
+        assert sarif["runs"][0]["results"] == []

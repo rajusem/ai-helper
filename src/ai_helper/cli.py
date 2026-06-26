@@ -14,12 +14,30 @@ def main():
 @main.command()
 @click.argument("path", default=".")
 @click.option("--format", "fmt", type=click.Choice(["table", "json", "sarif"]), default="table")
-@click.option("--severity", default=None, help="Filter by severity (e.g. critical,high)")
-def scan(path, fmt, severity):
-    """Scan for security vulnerabilities."""
+@click.option("--severity", default=None, help="Filter by severity (warning,suggestion,info)")
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False,
+    help="Show all issues (no top-N truncation)",
+)
+@click.option(
+    "--disable", default=None,
+    help="Comma-separated rule IDs to suppress (e.g. HRISK002,OQUAL001)",
+)
+def scan(path, fmt, severity, verbose, disable):
+    """Scan skill and agent files for issues."""
     from ai_helper.scan import run_scan
 
-    run_scan(path=path, fmt=fmt, severity_filter=severity)
+    disabled_rules = None
+    if disable:
+        disabled_rules = {r.strip().upper() for r in disable.split(",") if r.strip()}
+
+    run_scan(
+        path=path,
+        fmt=fmt,
+        severity_filter=severity,
+        verbose=verbose,
+        disabled_rules=disabled_rules,
+    )
 
 
 @main.command()
