@@ -2,9 +2,16 @@
 
 Your toolkit for working smarter with AI coding tools.
 
-**Scan for vulnerabilities. See what you spend. Configure your tools. Optimize your workflow.**
+A CLI for developers who use multiple AI coding tools and want a unified view of usage, configuration, and skill quality.
 
-ai-helper is an open-source CLI and MCP server that helps developers get more out of AI coding tools — without restricting how they use them. Everything is a suggestion, never a mandate.
+## What ai-helper adds
+
+A few things that aren't available built-in:
+
+- **Cross-tool view** — see Claude Code, OpenCode, and Cursor stats side by side (each tool only shows its own)
+- **Cost in dollars** — built-in stats show tokens; ai-helper estimates cost per session and model tier
+- **Skill file scanner** — no built-in linter for SKILL.md, CLAUDE.md, .cursorrules files
+- **Cross-tool config sync** — set models across all tools with one command instead of editing 3 config files
 
 ## Quick Start
 
@@ -32,37 +39,25 @@ ai-helper config set --model sonnet --small-model haiku
 
 ## Pillars
 
-### 1. Skill Scanner (`ai-helper scan`) — Implemented
+### 1. Skill Scanner (`ai-helper scan`)
 
-Analyze your AI skill files for quality, token efficiency, and hallucination risks.
+Analyze AI skill files (SKILL.md, CLAUDE.md, agent .md, .cursorrules) for common issues.
 
 ```bash
-# Scan current project
-ai-helper scan
-
-# Scan another project
-ai-helper scan /path/to/project
-
-# JSON output
-ai-helper scan --format json
-
-# Filter by severity
-ai-helper scan --severity warning
+ai-helper scan                          # Scan current project
+ai-helper scan --format sarif           # SARIF output for CI
+ai-helper scan --fail-on warning        # Exit 1 on warnings (CI gate)
+ai-helper scan --save-baseline          # Save current findings
+ai-helper scan --diff                   # Show only new issues since baseline
 ```
 
-- **Token cost analysis** — flags oversized skills that waste tokens on every turn
-- **Description quality** — catches workflow summaries in description fields (agents follow descriptions instead of reading skill bodies)
-- **Hallucination risk** — detects vague instructions, missing output formats, missing constraints
-- **Framing analysis** — flags heavy-prohibition skills with no positive alternatives
-- **Duplicate detection** — finds near-duplicate instructions that waste tokens
-- **Best practices** — missing model specs, missing error handling, missing verification gates
-- Scores each file 0-100 with actionable fix suggestions
+35+ checks across 7 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
 
 [Design doc](docs/pillars/01-skill-scanner.md)
 
-### 2. Usage Insights (`ai-helper stats`) — Implemented
+### 2. Usage Insights (`ai-helper stats`)
 
-Understand how you use AI tools across your workflow.
+Cross-tool usage stats.
 
 ```bash
 # Last 7 days summary
@@ -78,84 +73,62 @@ ai-helper stats --period 30d
 ai-helper stats --period all
 ```
 
-- Cross-tool usage summary (sessions, tokens, estimated cost, time)
-- Recent sessions table with model, turns, output, cost, duration, project
-- Model usage distribution (turns and share %)
+- **Cross-tool stats** — Claude Code (JSONL), OpenCode (SQLite), Cursor (SQLite) side by side
+- Per-session breakdown: model, turns, tokens, estimated cost, duration, project
+- Model usage distribution across all tools (21+ models including local Ollama)
 - Cost estimation using published model pricing (with honest caveat)
-- Currently reads Claude Code session data; OpenCode and Cursor planned
+
+```bash
+# What-if model savings
+ai-helper stats recommend
+# → "If 40% of Opus turns used Sonnet, save $1,006/week"
+
+# Cross-tool cost comparison by model tier
+ai-helper stats compare
+# → Opus $3.39/session vs Sonnet $0.44 vs Local $0.00
+
+# Context file cost impact
+ai-helper stats context
+```
 
 [Design doc](docs/pillars/02-usage-insights.md)
 
-### 3. Config Manager (`ai-helper config`) — Implemented
+### 3. Config Manager (`ai-helper config`)
 
-One command to configure your AI tools consistently.
+Set models across Claude Code, OpenCode, and Cursor from one command.
 
 ```bash
-# See current config across all tools side by side
-ai-helper config show
-
-# Set your preferred models across all tools
-ai-helper config set --model opus --small-model sonnet
-
-# Target a specific tool
-ai-helper config set --model sonnet --tool opencode
-
-# Model aliases work: opus, sonnet, haiku
-# Full model IDs also accepted: google-vertex-anthropic/claude-sonnet-4-6@default
+ai-helper config show                                    # Side-by-side view
+ai-helper config set --model opus --small-model sonnet   # Set across all tools
+ai-helper config set --model sonnet --tool opencode      # Target one tool
 ```
 
-- Set default models across Claude Code and OpenCode (Cursor shows UI instruction)
-- Side-by-side config comparison table
-- Model aliases (`opus`, `sonnet`, `haiku`) resolve to full IDs
-- Per-tool targeting with `--tool`
+Model aliases (`opus`, `sonnet`, `haiku`) resolve to full IDs. Validates model names before writing.
 
 [Design doc](docs/pillars/03-config-manager.md)
 
-### 4. Smart Defaults (`ai-helper optimize`) — Implemented
+### 4. Smart Defaults (`ai-helper optimize`)
 
-Opt-in optimizations that help you spend less without changing how you work.
+Convenience wrappers for RTK setup and reporting across tools.
 
 ```bash
-# Check what's active
-ai-helper optimize status
-
-# Install RTK across your tools (one command)
-ai-helper optimize install rtk
-
-# See measured token savings
-ai-helper optimize report
-
-# Find missed optimization opportunities
-ai-helper optimize discover
+ai-helper optimize status          # RTK/Ponytail status per tool
+ai-helper optimize install rtk     # Install RTK for Claude Code + OpenCode
+ai-helper optimize report          # Token savings (wraps rtk gain)
+ai-helper optimize discover        # Missed opportunities (wraps rtk discover)
 ```
-
-- **RTK integration** — install across Claude Code and OpenCode with one command
-- **Savings visibility** — wraps `rtk gain` and `rtk discover` for easy reporting
-- **Ponytail integration** — planned
-- **Model recommendations** — planned
-
-Everything is advisory. Override anytime.
 
 [Design doc](docs/pillars/04-smart-defaults.md)
 
-### 5. Developer Setup (`ai-helper init` / `ai-helper doctor`) — Doctor Implemented
+### 5. Developer Setup (`ai-helper doctor`)
 
-Get productive with AI tools in minutes, not hours.
+See all your AI tools in one place.
 
 ```bash
-# Health check across all installed tools
 ai-helper doctor
-# Shows: version, binary path, config, model, MCP servers,
-#        RTK status, context files, and issues for each tool
-
-# Set up AI tooling for this project (planned)
-ai-helper init
 ```
 
-- Detect installed AI tools, versions, and config locations
-- Show model configuration, MCP servers, and RTK status
-- Flag issues and suggest fixes
-- Generate CLAUDE.md, .cursorrules, OpenCode config from project analysis (planned)
+Detects Claude Code, OpenCode, and Cursor. Shows version, model, MCP servers, RTK status. Flags mismatches.
 
 [Design doc](docs/pillars/05-developer-setup.md)
 
@@ -169,7 +142,7 @@ ai-helper init
 
 ## Architecture
 
-ai-helper is built as an **MCP server** with a **CLI wrapper**. Since Claude Code, OpenCode, and Cursor all support MCP, the server provides capabilities to all three tools through a single implementation. The CLI provides the same features for direct terminal use.
+Python CLI (Click + Rich). Reads local session files and config — no proxy, no API keys, nothing leaves your machine.
 
 [Architecture doc](docs/architecture.md)
 
@@ -198,10 +171,12 @@ uv run ruff check src/
 | Pillar | Status |
 |--------|--------|
 | 1. Skill Scanner | 35+ rules, SARIF, baseline/diff, config file, custom rules, CI exit codes |
-| 2. Usage Insights | Claude Code session analytics with cost estimation |
-| 3. Config Manager | Cross-tool model config with aliases |
-| 4. Smart Defaults | RTK integration (install, status, report, discover) |
+| 2. Usage Insights | Cross-tool stats (Claude Code + OpenCode + Cursor), cost estimation, model recommendations, what-if savings, cross-tool comparison |
+| 3. Config Manager | Cross-tool model config with aliases and validation |
+| 4. Smart Defaults | RTK integration, model recommendations, context calculator |
 | 5. Developer Setup | `doctor` working, `init` planned |
+
+195 tests passing. Works with Claude Code, OpenCode, and Cursor.
 
 ## License
 

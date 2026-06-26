@@ -7,7 +7,7 @@ install: ## Install ai-helper (project-local)
 	uv sync --extra dev
 
 install-global: ## Install ai-helper globally (use from any directory)
-	uv tool install -e .
+	uv tool install -e . --force
 
 dev: install ## Install + run doctor to verify setup
 	uv run ai-helper doctor

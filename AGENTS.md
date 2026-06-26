@@ -58,10 +58,13 @@ local-docs/             # Research & reference (gitignored, not committed)
 
 ## Status
 
-- `ai-helper scan` — 35+ rule IDs, SARIF output, baseline/diff, config file, custom rules
-- `ai-helper stats` — Claude Code session analytics with cost estimation
-- `ai-helper config show/set` — cross-tool model configuration
+- `ai-helper scan` — 35+ rules, SARIF, baseline/diff, config, custom rules, CI exit codes
+- `ai-helper stats` — cross-tool (Claude Code + OpenCode + Cursor), cost estimation
+- `ai-helper stats recommend` — what-if savings by model tier
+- `ai-helper stats compare` — cross-tool cost per session by model tier
+- `ai-helper stats context` — context window usage per tool
+- `ai-helper config show/set` — cross-tool model config with validation
 - `ai-helper optimize` — RTK integration (install, status, report, discover)
 - `ai-helper doctor` — detects Claude Code, OpenCode, Cursor
 - `ai-helper init` — planned
-- 158 tests passing
+- 195 tests passing
