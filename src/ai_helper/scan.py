@@ -76,12 +76,17 @@ def run_scan(
     severity_filter: str | None = None,
     verbose: bool = False,
     disabled_rules: set[str] | None = None,
-) -> None:
-    """Scan skill and agent files for issues."""
+) -> dict[str, int]:
+    """Scan skill and agent files for issues.
+
+    Returns a dict of severity counts: {"warning": N, "suggestion": N, "info": N}.
+    """
+    empty_counts: dict[str, int] = {"warning": 0, "suggestion": 0, "info": 0}
+
     target = Path(path).resolve()
     if not target.exists():
         console.print(f"[bold red]Path not found: {path}[/bold red]")
-        return
+        return empty_counts
 
     files = _discover_files(target)
     if not files:
@@ -90,7 +95,7 @@ def run_scan(
             "Looked for: SKILL.md, CLAUDE.md, AGENTS.md, .cursorrules,"
             " agents/*.md, skills/*/SKILL.md"
         )
-        return
+        return empty_counts
 
     console.print()
     console.print(
@@ -104,11 +109,19 @@ def run_scan(
         result = _analyze_file(filepath, target)
         results.append(result)
 
-    # Order of operations: disable rules -> filter by severity -> score -> display
+    # Order: disable -> count severities -> filter display -> score
     if disabled_rules:
         normed = {r.strip().upper() for r in disabled_rules}
         for r in results:
             r.issues = [i for i in r.issues if i.rule_id not in normed]
+
+    # Count severities after --disable but before --severity display filter.
+    # This ensures disabled rules do not trigger --fail-on, but the cosmetic
+    # --severity display filter does not hide issues from --fail-on.
+    counts: dict[str, int] = {"warning": 0, "suggestion": 0, "info": 0}
+    for r in results:
+        for issue in r.issues:
+            counts[issue.severity] = counts.get(issue.severity, 0) + 1
 
     if severity_filter:
         allowed = {s.strip().lower() for s in severity_filter.split(",")}
@@ -125,6 +138,8 @@ def run_scan(
         _print_sarif(results)
     else:
         _print_results(results, verbose=verbose)
+
+    return counts
 
 
 def _discover_files(root: Path) -> list[Path]:

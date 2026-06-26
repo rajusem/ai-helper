@@ -1,5 +1,7 @@
 """ai-helper CLI entry point."""
 
+import sys
+
 import click
 
 from ai_helper import __version__
@@ -23,21 +25,38 @@ def main():
     "--disable", default=None,
     help="Comma-separated rule IDs to suppress (e.g. HRISK002,OQUAL001)",
 )
-def scan(path, fmt, severity, verbose, disable):
+@click.option(
+    "--fail-on",
+    "fail_on",
+    type=click.Choice(["warning", "suggestion", "info"]),
+    default=None,
+    help="Exit with code 1 if any issues at this severity or higher are found (for CI)",
+)
+def scan(path, fmt, severity, verbose, disable, fail_on):
     """Scan skill and agent files for issues."""
-    from ai_helper.scan import run_scan
+    from ai_helper.scan import SEVERITY_ORDER, run_scan
 
     disabled_rules = None
     if disable:
         disabled_rules = {r.strip().upper() for r in disable.split(",") if r.strip()}
 
-    run_scan(
+    counts = run_scan(
         path=path,
         fmt=fmt,
         severity_filter=severity,
         verbose=verbose,
         disabled_rules=disabled_rules,
     )
+
+    if fail_on is not None:
+        threshold = SEVERITY_ORDER[fail_on]
+        has_failing = any(
+            counts.get(sev, 0) > 0
+            for sev, order in SEVERITY_ORDER.items()
+            if order <= threshold
+        )
+        if has_failing:
+            sys.exit(1)
 
 
 @main.command()
