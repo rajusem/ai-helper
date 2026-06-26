@@ -42,10 +42,14 @@ def main():
 )
 @click.option(
     "--baseline-path", default=None,
-    help="Override baseline file path (default: .ai-helper-scan-baseline.json)",
+    help="Override baseline file path",
+)
+@click.option(
+    "--report", is_flag=True, default=False,
+    help="Show aggregate summary instead of per-file details",
 )
 def scan(path, fmt, severity, verbose, disable, fail_on,
-         save_baseline, diff_baseline, baseline_path):
+         save_baseline, diff_baseline, baseline_path, report):
     """Scan skill and agent files for issues."""
     from ai_helper.scan import SEVERITY_ORDER, run_scan
 
@@ -69,6 +73,7 @@ def scan(path, fmt, severity, verbose, disable, fail_on,
         save_baseline=save_baseline,
         diff_baseline=diff_baseline,
         baseline_path=baseline_path,
+        report=report,
     )
 
     if fail_on is not None:

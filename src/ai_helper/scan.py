@@ -169,6 +169,7 @@ def run_scan(
     save_baseline: bool = False,
     diff_baseline: bool = False,
     baseline_path: str | None = None,
+    report: bool = False,
 ) -> dict[str, int]:
     """Scan skill and agent files for issues.
 
@@ -279,7 +280,9 @@ def run_scan(
     for r in results:
         r.score = _compute_score(r.issues)
 
-    if fmt == "json":
+    if report:
+        _print_report(results)
+    elif fmt == "json":
         _print_json(results)
     elif fmt == "sarif":
         _print_sarif(results)
@@ -1117,6 +1120,65 @@ def _check_compound_instructions(
                 rule_id="HRISK004",
             ))
             break
+
+
+def _print_report(results: list[ScanResult]) -> None:
+    """Aggregate summary report across all scanned files."""
+    total_files = len(results)
+    total_issues = sum(len(r.issues) for r in results)
+    total_tokens = sum(r.token_estimate for r in results)
+    avg_score = (
+        sum(r.score for r in results) // max(total_files, 1)
+    )
+
+    severity_counts: dict[str, int] = {}
+    rule_counts: dict[str, int] = {}
+    for r in results:
+        for issue in r.issues:
+            sev = issue.severity
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+            rid = issue.rule_id
+            rule_counts[rid] = rule_counts.get(rid, 0) + 1
+
+    console.print()
+    summary = Table(title="Scan Report")
+    summary.add_column("Metric", style="dim")
+    summary.add_column("Value")
+    summary.add_row("Files scanned", str(total_files))
+    summary.add_row("Total tokens", f"~{total_tokens:,}")
+    summary.add_row("Total issues", str(total_issues))
+    summary.add_row("Avg score", f"{avg_score}/100")
+    for sev in ("warning", "suggestion", "info"):
+        cnt = severity_counts.get(sev, 0)
+        if cnt:
+            summary.add_row(f"  {sev}", str(cnt))
+    console.print(summary)
+
+    if rule_counts:
+        top_rules = sorted(
+            rule_counts.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+        rules_table = Table(title="Top Rules Fired")
+        rules_table.add_column("Rule")
+        rules_table.add_column("Count", justify="right")
+        for rid, cnt in top_rules:
+            rules_table.add_row(rid, str(cnt))
+        console.print()
+        console.print(rules_table)
+
+    worst = sorted(results, key=lambda r: r.score)[:5]
+    if worst and worst[0].score < 100:
+        worst_table = Table(title="Lowest Scoring Files")
+        worst_table.add_column("File")
+        worst_table.add_column("Score", justify="right")
+        worst_table.add_column("Issues", justify="right")
+        for r in worst:
+            if r.score < 100:
+                worst_table.add_row(r.file, str(r.score), str(len(r.issues)))
+        console.print()
+        console.print(worst_table)
+
+    console.print()
 
 
 def _print_results(
