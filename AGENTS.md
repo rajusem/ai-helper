@@ -58,11 +58,10 @@ local-docs/             # Research & reference (gitignored, not committed)
 
 ## Status
 
-- `ai-helper doctor` — working (detects all 3 tools)
-- `ai-helper config show` — working (side-by-side config table)
-- `ai-helper config set` — working (writes Claude Code + OpenCode configs)
-- `ai-helper stats` — working (Claude Code session analytics)
-- `ai-helper optimize status/install/report/discover` — working (RTK integration)
-- `ai-helper scan` — working (skill file analyzer, 18 checks)
-- `ai-helper init` — placeholder stub
-- 10 tests passing
+- `ai-helper scan` — 35+ rule IDs, SARIF output, baseline/diff, config file, custom rules
+- `ai-helper stats` — Claude Code session analytics with cost estimation
+- `ai-helper config show/set` — cross-tool model configuration
+- `ai-helper optimize` — RTK integration (install, status, report, discover)
+- `ai-helper doctor` — detects Claude Code, OpenCode, Cursor
+- `ai-helper init` — planned
+- 158 tests passing

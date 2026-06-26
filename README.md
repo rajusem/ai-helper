@@ -197,10 +197,10 @@ uv run ruff check src/
 
 | Pillar | Status |
 |--------|--------|
-| 1. Skill Scanner | `scan` working (12 check categories) |
-| 2. Usage Insights | `stats` working (Claude Code sessions) |
-| 3. Config Manager | `config show` and `config set` working |
-| 4. Smart Defaults | `optimize status/install/report/discover` working |
+| 1. Skill Scanner | 35+ rules, SARIF, baseline/diff, config file, custom rules, CI exit codes |
+| 2. Usage Insights | Claude Code session analytics with cost estimation |
+| 3. Config Manager | Cross-tool model config with aliases |
+| 4. Smart Defaults | RTK integration (install, status, report, discover) |
 | 5. Developer Setup | `doctor` working, `init` planned |
 
 ## License

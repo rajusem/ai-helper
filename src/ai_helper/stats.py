@@ -115,6 +115,10 @@ def _parse_period(period: str) -> datetime:
             )
             return now - timedelta(days=7)
         return now - timedelta(weeks=weeks)
+    console.print(
+        f"[yellow]Warning: unrecognized period '{period}',"
+        " using 7d. Valid: Nd, Nw, all[/yellow]"
+    )
     return now - timedelta(days=7)
 
 

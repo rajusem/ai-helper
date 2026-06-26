@@ -148,8 +148,10 @@ def _install_rtk_cursor(rtk_path: str, tool) -> None:
 
 
 def _install_ponytail() -> None:
-    console.print("[yellow]Ponytail installation not yet implemented.[/yellow]")
-    console.print("Install manually: https://github.com/DietrichGebert/ponytail")
+    console.print("[yellow]Ponytail auto-install coming soon.[/yellow]")
+    console.print(
+        "Install manually: https://github.com/DietrichGebert/ponytail"
+    )
 
 
 def _check_rtk_hooks() -> dict[str, bool]:

@@ -61,8 +61,8 @@ class CursorDetector(ToolDetector):
         return info
 
     def _check_app_installed(self) -> bool:
-        system = platform.system()
-        if system == "Darwin":
+        # macOS only — Linux/Windows detection not yet implemented
+        if platform.system() == "Darwin":
             return Path("/Applications/Cursor.app").exists()
         return False
 

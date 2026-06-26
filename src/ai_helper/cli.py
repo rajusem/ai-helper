@@ -188,7 +188,10 @@ def optimize_discover():
 @main.command()
 def init():
     """Set up AI tooling for this project."""
-    click.echo("Initializing... (not yet implemented)")
+    click.echo(
+        "ai-helper init is not yet available.\n"
+        "Use 'ai-helper doctor' to check your current setup."
+    )
 
 
 @main.command()

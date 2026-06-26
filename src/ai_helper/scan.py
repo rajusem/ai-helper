@@ -964,7 +964,6 @@ def _check_redundant_context(
 
     if pkg_json.exists():
         try:
-            import json
             data = json.loads(pkg_json.read_text())
             deps = set(data.get("dependencies", {}).keys())
             deps |= set(data.get("devDependencies", {}).keys())
