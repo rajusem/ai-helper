@@ -163,11 +163,15 @@ def _check_rtk_hooks() -> dict[str, bool]:
         if tool.name == "Claude Code":
             result[tool.name] = tool.extras.get("rtk_active", False)
         elif tool.name == "OpenCode":
-            # Check if opencode plugin exists
             from pathlib import Path
 
-            plugin_path = Path.home() / ".config" / "opencode" / "node_modules" / "rtk-opencode"
+            plugin_path = (
+                Path.home() / ".config" / "opencode"
+                / "node_modules" / "rtk-opencode"
+            )
             result[tool.name] = plugin_path.exists()
+        elif tool.name == "Cursor":
+            result[tool.name] = False
     return result
 
 

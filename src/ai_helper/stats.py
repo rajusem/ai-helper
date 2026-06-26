@@ -138,6 +138,18 @@ def _collect_stats(
             stats = _read_claude_sessions(cutoff)
             if stats.sessions:
                 results.append(stats)
+        elif tool.name == "Cursor":
+            stats = _read_cursor_sessions(cutoff)
+            if stats.sessions:
+                results.append(stats)
+        elif tool.name == "OpenCode":
+            stats = _read_opencode_sessions(cutoff)
+            if stats.sessions:
+                results.append(stats)
+            else:
+                console.print(
+                    "[dim]OpenCode: no session data found[/dim]"
+                )
 
     return results
 
@@ -238,6 +250,226 @@ def _parse_claude_session(path: Path) -> SessionStats | None:
         return None
 
 
+def _read_opencode_sessions(
+    cutoff: datetime, db_path: Path | None = None,
+) -> ToolStats:
+    """Read OpenCode sessions from ~/.local/share/opencode/opencode.db."""
+    import sqlite3
+    from contextlib import closing
+
+    stats = ToolStats(tool="OpenCode")
+    if db_path is None:
+        db_path = (
+            Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+        )
+    if not db_path.exists():
+        return stats
+
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        with closing(
+            sqlite3.connect(uri, uri=True, timeout=5)
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT title, model, cost,"
+                " tokens_input, tokens_output,"
+                " tokens_cache_read, tokens_cache_write,"
+                " time_created, time_updated"
+                " FROM session"
+                " WHERE time_created >= ?"
+                " ORDER BY time_created DESC",
+                (cutoff_ms,),
+            ).fetchall()
+
+            for row in rows:
+                model = _parse_opencode_model(row["model"])
+                started = _parse_cursor_ts(row["time_created"])
+                ended = _parse_cursor_ts(row["time_updated"])
+                duration = 0.0
+                tc = row["time_created"] or 0
+                tu = row["time_updated"] or 0
+                if tc and tu:
+                    duration = (tu - tc) / 60000
+
+                stats.sessions.append(SessionStats(
+                    session_id=str(row["time_created"]),
+                    tool="OpenCode",
+                    model=model,
+                    turns=1,
+                    input_tokens=row["tokens_input"] or 0,
+                    output_tokens=row["tokens_output"] or 0,
+                    cache_read_tokens=row["tokens_cache_read"] or 0,
+                    cache_write_tokens=row["tokens_cache_write"] or 0,
+                    cost_usd=row["cost"] or 0.0,
+                    started=started,
+                    ended=ended,
+                    duration_minutes=duration,
+                    project=(row["title"] or "")[:40],
+                ))
+    except sqlite3.DatabaseError:
+        return stats
+
+    stats.sessions.sort(
+        key=lambda s: s.started or datetime.min.replace(
+            tzinfo=timezone.utc
+        ),
+        reverse=True,
+    )
+    return stats
+
+
+def _parse_opencode_model(model_str: str | None) -> str:
+    """Parse OpenCode model JSON: {"id":"claude-sonnet-4-6@default",...}"""
+    if not model_str:
+        return "unknown"
+    try:
+        data = json.loads(model_str)
+        return data.get("id", "unknown")
+    except (json.JSONDecodeError, TypeError):
+        return model_str[:30] if model_str else "unknown"
+
+
+def _read_cursor_sessions(
+    cutoff: datetime, db_path: Path | None = None,
+) -> ToolStats:
+    """Read Cursor sessions from state.vscdb + ai-tracking DB."""
+    import json as _json
+    import platform
+    import sqlite3
+    from contextlib import closing
+
+    stats = ToolStats(tool="Cursor")
+
+    # Primary: composer sessions from state.vscdb
+    if db_path is None:
+        system = platform.system()
+        if system == "Darwin":
+            state_db = (
+                Path.home() / "Library" / "Application Support"
+                / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+            )
+        elif system == "Linux":
+            state_db = (
+                Path.home() / ".config" / "Cursor" / "User"
+                / "globalStorage" / "state.vscdb"
+            )
+        else:
+            state_db = Path()
+    else:
+        state_db = db_path
+
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+
+    if state_db.exists():
+        try:
+            uri = f"file:{state_db}?mode=ro"
+            with closing(
+                sqlite3.connect(uri, uri=True, timeout=5)
+            ) as conn:
+                row = conn.execute(
+                    "SELECT value FROM ItemTable"
+                    " WHERE key = 'composer.composerHeaders'"
+                ).fetchone()
+                if row:
+                    data = _json.loads(row[0])
+                    composers = data.get("allComposers", [])
+                    for c in composers:
+                        created = c.get("createdAt", 0)
+                        if created < cutoff_ms:
+                            continue
+                        ts = _parse_cursor_ts(created)
+                        name = c.get("name", "") or ""
+                        subtitle = c.get("subtitle", "") or ""
+                        stats.sessions.append(SessionStats(
+                            session_id=c.get("composerId", ""),
+                            tool="Cursor",
+                            model=c.get("unifiedMode", "agent"),
+                            turns=1,
+                            started=ts,
+                            ended=_parse_cursor_ts(
+                                c.get("lastUpdatedAt", created)
+                            ),
+                            duration_minutes=(
+                                (c.get("lastUpdatedAt", created)
+                                 - created) / 60000
+                            ),
+                            project=(name or subtitle)[:40],
+                        ))
+        except (sqlite3.DatabaseError, _json.JSONDecodeError):
+            pass
+
+    # Secondary: AI attribution from ai-tracking DB
+    tracking_db = (
+        Path.home() / ".cursor" / "ai-tracking"
+        / "ai-code-tracking.db"
+    )
+    if db_path is not None:
+        tracking_db = db_path
+
+    if tracking_db.exists() and tracking_db != state_db:
+        try:
+            uri = f"file:{tracking_db}?mode=ro"
+            with closing(
+                sqlite3.connect(uri, uri=True, timeout=5)
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                _cursor_attribution(conn, stats)
+        except sqlite3.DatabaseError:
+            pass
+
+    stats.sessions.sort(
+        key=lambda s: s.started or datetime.min.replace(
+            tzinfo=timezone.utc
+        ),
+        reverse=True,
+    )
+    return stats
+
+
+def _cursor_attribution(conn, stats):
+    """Read AI attribution data from scored_commits."""
+    try:
+        rows = conn.execute(
+            "SELECT commitHash, linesAdded, v1AiPercentage"
+            " FROM scored_commits"
+            " WHERE linesAdded > 0 AND v1AiPercentage != ''"
+        ).fetchall()
+    except Exception:
+        return
+
+    if not rows:
+        return
+
+    total_lines = 0
+    weighted_pct = 0.0
+    for row in rows:
+        try:
+            lines = int(row["linesAdded"])
+            pct = float(row["v1AiPercentage"])
+            total_lines += lines
+            weighted_pct += pct * lines
+        except (ValueError, TypeError):
+            continue
+
+    if total_lines > 0:
+        avg_pct = weighted_pct / total_lines
+        stats.tool = f"Cursor (AI: {avg_pct:.0f}%)"
+
+
+def _parse_cursor_ts(ts_ms) -> datetime | None:
+    if ts_ms is None:
+        return None
+    try:
+        return datetime.fromtimestamp(
+            int(ts_ms) / 1000, tz=timezone.utc
+        )
+    except (ValueError, TypeError, OSError):
+        return None
+
+
 def _estimate_cost(
     model: str,
     input_tokens: int,
@@ -279,19 +511,31 @@ def _print_summary(all_stats: list[ToolStats], period: str) -> None:
     table.add_row("Sessions", *[str(len(ts.sessions)) for ts in all_stats])
     table.add_row(
         "Input Tokens",
-        *[_format_tokens(ts.total_input) for ts in all_stats],
+        *[
+            _format_tokens(ts.total_input) if ts.total_input else "[dim]N/A[/dim]"
+            for ts in all_stats
+        ],
     )
     table.add_row(
         "Output Tokens",
-        *[_format_tokens(ts.total_output) for ts in all_stats],
+        *[
+            _format_tokens(ts.total_output) if ts.total_output else "[dim]N/A[/dim]"
+            for ts in all_stats
+        ],
     )
     table.add_row(
         "Cache Read",
-        *[_format_tokens(ts.total_cache_read) for ts in all_stats],
+        *[
+            _format_tokens(ts.total_cache_read) if ts.total_cache_read else "[dim]N/A[/dim]"
+            for ts in all_stats
+        ],
     )
     table.add_row(
         "Est. Cost",
-        *[f"${ts.total_cost:.2f}" for ts in all_stats],
+        *[
+            f"${ts.total_cost:.2f}" if ts.total_cost else "[dim]N/A[/dim]"
+            for ts in all_stats
+        ],
     )
     table.add_row(
         "Total Time",
@@ -317,17 +561,21 @@ def _print_sessions(all_stats: list[ToolStats]) -> None:
         table.add_column("Duration", justify="right")
         table.add_column("Project", max_width=30)
 
+        is_cursor = "Cursor" in ts.tool
         for s in recent:
             date = s.started.strftime("%m/%d %H:%M") if s.started else "-"
             dur = f"{s.duration_minutes:.0f}m" if s.duration_minutes else "-"
+            output = (
+                "[dim]--[/dim]" if is_cursor
+                else _format_tokens(s.output_tokens)
+            )
+            cost = (
+                "[dim]--[/dim]" if is_cursor
+                else f"${s.cost_usd:.2f}"
+            )
             table.add_row(
-                date,
-                s.model,
-                str(s.turns),
-                _format_tokens(s.output_tokens),
-                f"${s.cost_usd:.2f}",
-                dur,
-                s.project,
+                date, s.model, str(s.turns),
+                output, cost, dur, s.project,
             )
 
         console.print()
