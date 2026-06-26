@@ -6,8 +6,12 @@ from ai_helper.scan import (
     Issue,
     ScanResult,
     _analyze_file,
+    _check_broken_references,
+    _check_compound_instructions,
     _check_description_quality,
+    _check_role_identity,
     _check_structure,
+    _check_termination_conditions,
     _check_token_waste,
     _compute_score,
     _find_duplicate_instructions,
@@ -575,3 +579,199 @@ class TestSARIF:
         captured = capsys.readouterr()
         sarif = json.loads(captured.out)
         assert sarif["runs"][0]["results"] == []
+
+
+# ── Theme 3: Broken file references ───────────────────────────────
+
+
+class TestBrokenReferences:
+    def test_existing_file_no_issue(self, tmp_path):
+        ref_file = tmp_path / "helper.md"
+        ref_file.write_text("# Helper")
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read helper.md for details.")
+        result = ScanResult(file="SKILL.md")
+        regions = _parse_content_regions(skill.read_text().splitlines())
+        _check_broken_references(result, skill.read_text(), skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_missing_file_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read nonexistent.md for context.")
+        result = ScanResult(file="SKILL.md")
+        regions = _parse_content_regions(skill.read_text().splitlines())
+        _check_broken_references(result, skill.read_text(), skill, regions)
+        assert any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_path_in_code_fence_skipped(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("text\n```\nRead missing.md\n```\nmore")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_template_var_skipped(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read ${CONFIG_PATH}/settings.json")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_glob_pattern_skipped(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read *.md files in the directory")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_absolute_path_skipped(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read /etc/config.json for settings")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+
+# ── Theme 3: Termination conditions ───────────────────────────────
+
+
+class TestTerminationConditions:
+    def test_multi_step_with_limit_no_issue(self):
+        content = "\n".join([f"line {i}" for i in range(25)] + [
+            "Step 1: analyze the code",
+            "Step 2: fix the issue",
+            "Step 3: verify the fix",
+            "Maximum 3 retries allowed.",
+        ])
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_termination_conditions(result, content, lines, regions)
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_multi_step_without_limit_flagged(self):
+        content = "\n".join([f"line {i}" for i in range(25)] + [
+            "Step 1: analyze the code",
+            "Step 2: call agent to fix",
+            "Step 3: retry if needed",
+        ])
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_termination_conditions(result, content, lines, regions)
+        assert any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_short_file_skipped(self):
+        content = "Step 1: do thing\nStep 2: retry"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_termination_conditions(result, content, lines, regions)
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_steps_in_code_fence_skipped(self):
+        base = [f"line {i}" for i in range(25)]
+        fenced = base + ["```", "Step 1: foo", "retry bar", "```"]
+        content = "\n".join(fenced)
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_termination_conditions(result, content, lines, regions)
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+
+# ── Theme 3: Role identity ────────────────────────────────────────
+
+
+class TestRoleIdentity:
+    def _make_agent_path(self, tmp_path, name="reviewer.md"):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        return agents_dir / name
+
+    def test_agent_with_role_no_issue(self, tmp_path):
+        f = self._make_agent_path(tmp_path)
+        content = "---\nname: reviewer\n---\n" + "\n".join(
+            ["You are a code reviewer."] + [f"line {i}" for i in range(20)]
+        )
+        f.write_text(content)
+        result = ScanResult(file=str(f))
+        lines = content.splitlines()
+        _check_role_identity(result, content, lines, f)
+        assert not any(i.rule_id == "OQUAL003" for i in result.issues)
+
+    def test_agent_without_role_flagged(self, tmp_path):
+        f = self._make_agent_path(tmp_path)
+        content = "---\nname: reviewer\n---\n" + "\n".join(
+            ["Review the code."] + [f"Check line {i}" for i in range(20)]
+        )
+        f.write_text(content)
+        result = ScanResult(file=str(f))
+        lines = content.splitlines()
+        _check_role_identity(result, content, lines, f)
+        assert any(i.rule_id == "OQUAL003" for i in result.issues)
+
+    def test_claude_md_skipped(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        content = "\n".join([f"line {i}" for i in range(20)])
+        f.write_text(content)
+        result = ScanResult(file=str(f))
+        lines = content.splitlines()
+        _check_role_identity(result, content, lines, f)
+        assert not any(i.rule_id == "OQUAL003" for i in result.issues)
+
+    def test_non_agents_dir_skipped(self, tmp_path):
+        f = tmp_path / "skills" / "foo.md"
+        f.parent.mkdir()
+        content = "\n".join([f"line {i}" for i in range(20)])
+        f.write_text(content)
+        result = ScanResult(file=str(f))
+        lines = content.splitlines()
+        _check_role_identity(result, content, lines, f)
+        assert not any(i.rule_id == "OQUAL003" for i in result.issues)
+
+
+# ── Theme 3: Compound instructions ────────────────────────────────
+
+
+class TestCompoundInstructions:
+    def test_two_conjunctions_no_issue(self):
+        lines = ["Check the file and verify the output and report."]
+        regions = ["content"]
+        result = ScanResult(file="test.md")
+        _check_compound_instructions(result, "\n".join(lines), lines, regions)
+        assert not any(i.rule_id == "HRISK004" for i in result.issues)
+
+    def test_three_plus_conjunctions_flagged(self):
+        line = ("Analyze the code and fix the bugs and update tests"
+                " and also document the changes")
+        lines = [line]
+        regions = ["content"]
+        result = ScanResult(file="test.md")
+        _check_compound_instructions(result, "\n".join(lines), lines, regions)
+        assert any(i.rule_id == "HRISK004" for i in result.issues)
+
+    def test_compound_in_code_fence_skipped(self):
+        line = "do this and that and also something and additionally more"
+        lines = ["```", line, "```"]
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_compound_instructions(
+            result, "\n".join(lines), lines, regions
+        )
+        assert not any(i.rule_id == "HRISK004" for i in result.issues)
+
+    def test_short_lines_skipped(self):
+        lines = ["a and b and c and d"]
+        regions = ["content"]
+        result = ScanResult(file="test.md")
+        _check_compound_instructions(result, "\n".join(lines), lines, regions)
+        assert not any(i.rule_id == "HRISK004" for i in result.issues)

@@ -195,6 +195,10 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     _check_nested_references(result, content, lines)
     _check_redundant_context(result, content, filepath)
     _check_best_practices(result, content, lines)
+    _check_broken_references(result, content, filepath, regions)
+    _check_termination_conditions(result, content, lines, regions)
+    _check_role_identity(result, content, lines, filepath)
+    _check_compound_instructions(result, content, lines, regions)
 
     result.score = _compute_score(result.issues)
 
@@ -790,6 +794,180 @@ def _check_best_practices(
                 " endlessly and waste tokens",
                 rule_id="BPRAC002",
             ))
+
+
+def _check_broken_references(
+    result: ScanResult, content: str, filepath: Path,
+    regions: list[str] | None = None,
+) -> None:
+    """STRUCT006: file paths referenced in content that don't exist."""
+    lines = content.splitlines()
+    rgns = regions or ["content"] * len(lines)
+    content_text = "\n".join(
+        line for line, r in zip(lines, rgns) if r == "content"
+    )
+
+    ref_pattern = re.compile(
+        r"(?:read|see|refer to|check|load|reference|cat|open)\s+"
+        r"[`'\"]?([a-zA-Z0-9_./-]+\.\w{1,10})[`'\"]?",
+        re.IGNORECASE,
+    )
+    refs = ref_pattern.findall(content_text)
+
+    project_root = filepath.parent
+    while project_root.parent != project_root:
+        if (project_root / ".git").exists():
+            break
+        project_root = project_root.parent
+
+    broken = []
+    for ref in refs:
+        if ref.startswith("http"):
+            continue
+        if ref.startswith("/"):
+            continue
+        if any(c in ref for c in ("*", "?", "${", "{{", "<")):
+            continue
+        resolved_local = filepath.parent / ref
+        resolved_root = project_root / ref
+        if not resolved_local.exists() and not resolved_root.exists():
+            broken.append(ref)
+
+    if broken:
+        shown = broken[:3]
+        msg = "Broken file reference" + ("s" if len(broken) > 1 else "")
+        msg += ": " + ", ".join(shown)
+        if len(broken) > 3:
+            msg += f" (+{len(broken) - 3} more)"
+        result.issues.append(Issue(
+            category="structure",
+            severity="warning",
+            message=msg,
+            fix="Verify referenced files exist. Broken references"
+            " cause agents to waste tokens on 'file not found'",
+            rule_id="STRUCT006",
+        ))
+
+
+def _check_termination_conditions(
+    result: ScanResult, content: str, lines: list[str],
+    regions: list[str] | None = None,
+) -> None:
+    """BPRAC003: multi-step skills without termination limits."""
+    if len(lines) < 20:
+        return
+
+    rgns = regions or ["content"] * len(lines)
+    content_text = "\n".join(
+        line for line, r in zip(lines, rgns) if r == "content"
+    ).lower()
+
+    step_patterns = [
+        r"\bstep\s+\d", r"\bphase\s+\d", r"\biteration\b",
+        r"\bloop\b", r"\brepeat\b", r"\bretry\b",
+        r"\bcall\b.*\bagent\b",
+    ]
+    has_steps = any(
+        re.search(p, content_text) for p in step_patterns
+    )
+    if not has_steps:
+        return
+
+    term_patterns = [
+        r"\bmaximum\b", r"\bat most\b", r"\blimit\b", r"\bcap\b",
+        r"\bstop when\b", r"\babort\b", r"\bno more than\b",
+        r"up to \d", r"\bmax_", r"\d+\s*times\b",
+        r"\d+\s*retries\b", r"\d+\s*attempts\b",
+    ]
+    has_term = any(
+        re.search(p, content_text) for p in term_patterns
+    )
+    if not has_term:
+        result.issues.append(Issue(
+            category="best-practice",
+            severity="warning",
+            message="Multi-step process without termination condition",
+            fix="Add explicit limits ('maximum 3 attempts',"
+            " 'stop after N iterations') to prevent runaway"
+            " token consumption",
+            rule_id="BPRAC003",
+        ))
+
+
+def _check_role_identity(
+    result: ScanResult, content: str, lines: list[str],
+    filepath: Path,
+) -> None:
+    """OQUAL003: agent files without role/identity statement."""
+    fname = filepath.name.lower()
+    if fname in ("claude.md", "agents.md", "skill.md", ".cursorrules"):
+        return
+
+    path_str = str(filepath).lower()
+    if "/agents/" not in path_str:
+        return
+
+    if len(lines) < 15:
+        return
+
+    fm_end = 0
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], 1):
+            if line.strip() == "---":
+                fm_end = i + 1
+                break
+
+    window = lines[fm_end:fm_end + 20]
+    window_text = "\n".join(window).lower()
+
+    role_patterns = [
+        r"\byou are\b", r"\bact as\b", r"\byour role\b",
+        r"\bas a\b.*\b(engineer|developer|reviewer|expert|analyst)\b",
+    ]
+    has_role = any(re.search(p, window_text) for p in role_patterns)
+
+    if not has_role:
+        result.issues.append(Issue(
+            category="output-quality",
+            severity="suggestion",
+            message="No role/identity statement in first 20 lines",
+            fix="Add 'You are a...' or 'Act as...' to set agent"
+            " identity — improves consistency of behavior",
+            rule_id="OQUAL003",
+        ))
+
+
+def _check_compound_instructions(
+    result: ScanResult, content: str, lines: list[str],
+    regions: list[str] | None = None,
+) -> None:
+    """HRISK004: lines with 3+ conjunctions cause partial compliance."""
+    rgns = regions or ["content"] * len(lines)
+    conjunctions = re.compile(
+        r"\band\b|\balso\b|\badditionally\b|\bplus\b|\bas well as\b",
+        re.IGNORECASE,
+    )
+
+    for i, (line, region) in enumerate(zip(lines, rgns)):
+        if region != "content":
+            continue
+        if line.strip().startswith("#"):
+            continue
+        if len(line.strip()) < 20:
+            continue
+        count = len(conjunctions.findall(line))
+        if count >= 3:
+            result.issues.append(Issue(
+                category="hallucination-risk",
+                severity="suggestion",
+                message=f"Line {i + 1} has {count} conjunctions"
+                " — agents may only execute the first 2-3 clauses",
+                fix="Split into separate numbered steps or bullet"
+                " points for reliable execution",
+                line=i + 1,
+                rule_id="HRISK004",
+            ))
+            break
 
 
 def _print_results(
