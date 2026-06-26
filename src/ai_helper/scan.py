@@ -122,16 +122,39 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _analyze_file(filepath: Path, root: Path) -> ScanResult:
-    content = filepath.read_text()
     rel_path = str(filepath.relative_to(root))
+    encoding_issue = False
+    try:
+        content = filepath.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        content = filepath.read_text(encoding="utf-8", errors="replace")
+        encoding_issue = True
+    except OSError as e:
+        result = ScanResult(file=rel_path)
+        result.issues.append(Issue(
+            category="structure", severity="warning",
+            message=f"File could not be read: {e}",
+        ))
+        return result
+
     tokens = _estimate_tokens(content)
     result = ScanResult(file=rel_path, token_estimate=tokens)
+
+    if encoding_issue:
+        result.issues.append(Issue(
+            category="structure",
+            severity="warning",
+            message="File contains non-UTF-8 bytes",
+            fix="Convert file to UTF-8 encoding",
+        ))
+
     lines = content.splitlines()
+    regions = _parse_content_regions(lines)
 
     _check_size(result, content, tokens, lines)
-    _check_structure(result, content, lines)
+    _check_structure(result, content, lines, regions)
     _check_description_quality(result, content)
-    _check_token_waste(result, content, lines)
+    _check_token_waste(result, content, lines, regions)
     _check_hedging_and_filler(result, content)
     _check_hallucination_risks(result, content, lines)
     _check_output_quality(result, content, lines)
@@ -147,6 +170,50 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     result.score = max(0, 100 - penalty * 5)
 
     return result
+
+
+def _parse_content_regions(lines: list[str]) -> list[str]:
+    """Classify each line as 'frontmatter', 'codefence', or 'content'."""
+    regions: list[str] = []
+    state = "content"
+    fence_char = ""
+    fence_len = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if state == "content" and i == 0 and stripped == "---":
+            state = "frontmatter"
+            regions.append("frontmatter")
+            continue
+
+        if state == "frontmatter":
+            regions.append("frontmatter")
+            if stripped == "---":
+                state = "content"
+            continue
+
+        if state == "content":
+            match = re.match(r"^(`{3,}|~{3,})", stripped)
+            if match:
+                fence_char = match.group(1)[0]
+                fence_len = len(match.group(1))
+                state = "codefence"
+                regions.append("codefence")
+                continue
+            regions.append("content")
+            continue
+
+        if state == "codefence":
+            regions.append("codefence")
+            if (stripped.startswith(fence_char * fence_len)
+                    and stripped == fence_char * len(stripped)):
+                state = "content"
+                fence_char = ""
+                fence_len = 0
+            continue
+
+    return regions
 
 
 def _check_size(
@@ -188,9 +255,14 @@ def _check_size(
 
 
 def _check_structure(
-    result: ScanResult, content: str, lines: list[str]
+    result: ScanResult, content: str, lines: list[str],
+    regions: list[str] | None = None,
 ) -> None:
-    has_headers = any(line.startswith("#") for line in lines)
+    has_headers = any(
+        line.startswith("#") and len(line) > 1 and line[1] in (" ", "#")
+        for line, region in zip(lines, regions or ["content"] * len(lines))
+        if region == "content"
+    )
     if len(lines) > 30 and not has_headers:
         result.issues.append(Issue(
             category="structure",
@@ -223,7 +295,7 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
     frontmatter = content[3:end]
 
     desc_match = re.search(
-        r"description:\s*(.+?)(?:\n\w|\n---)", frontmatter, re.DOTALL
+        r"description:\s*(.+?)(?:\n\w|\n---|\Z)", frontmatter, re.DOTALL
     )
     if not desc_match:
         return
@@ -289,16 +361,20 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
 
 
 def _check_token_waste(
-    result: ScanResult, content: str, lines: list[str]
+    result: ScanResult, content: str, lines: list[str],
+    regions: list[str] | None = None,
 ) -> None:
-    for i, line in enumerate(lines, 1):
+    rgns = regions or ["content"] * len(lines)
+    for i, line in enumerate(lines):
+        if rgns[i] != "content":
+            continue
         if len(line) > 200 and not line.startswith("http"):
             result.issues.append(Issue(
                 category="token-cost",
                 severity="info",
-                message=f"Line {i} is {len(line)} chars — long lines waste tokens",
+                message=f"Line {i + 1} is {len(line)} chars — long lines waste tokens",
                 fix="Break into shorter sentences for clarity",
-                line=i,
+                line=i + 1,
             ))
             break  # only report first
 
@@ -345,7 +421,7 @@ def _find_duplicate_instructions(lines: list[str]) -> int:
     seen = {}
     dupes = 0
     for line in stripped:
-        key = re.sub(r"\s+", " ", line)[:80]
+        key = re.sub(r"\s+", " ", line)
         if key in seen:
             dupes += 1
         else:
