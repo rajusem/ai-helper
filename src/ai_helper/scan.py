@@ -61,6 +61,51 @@ class ScanResult:
     score: int = 100
 
 
+@dataclass
+class CheckContext:
+    """Context passed to custom Rule.check() methods."""
+
+    result: ScanResult
+    content: str
+    lines: list[str]
+    regions: list[str]
+    filepath: Path
+    root: Path
+    tokens: int
+
+
+class Rule:
+    """Base class for custom scanner rules.
+
+    Subclass and implement check() to add custom checks.
+    check() returns a list of Issue objects (do not mutate result).
+    """
+
+    id: str = ""
+    name: str = ""
+    category: str = "custom"
+
+    def check(self, ctx: CheckContext) -> list[Issue]:
+        return []
+
+
+RULE_REGISTRY: list[Rule] = []
+
+
+def register_rule(rule: Rule) -> None:
+    """Register a custom rule. IDs must start with CUSTOM_."""
+    if not rule.id:
+        raise ValueError("Rule must have a non-empty id")
+    existing = {r.id for r in RULE_REGISTRY}
+    if rule.id in existing:
+        raise ValueError(f"Duplicate rule id: {rule.id}")
+    if not rule.id.startswith("CUSTOM_"):
+        raise ValueError(
+            f"Custom rule IDs must start with CUSTOM_: {rule.id}"
+        )
+    RULE_REGISTRY.append(rule)
+
+
 def _compute_score(issues: list[Issue]) -> int:
     """Compute score with severity-weighted penalties capped per category."""
     by_category: dict[str, int] = {}
@@ -364,6 +409,21 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     _check_termination_conditions(result, content, lines, regions)
     _check_role_identity(result, content, lines, filepath)
     _check_compound_instructions(result, content, lines, regions)
+
+    # Run custom rules from registry
+    if RULE_REGISTRY:
+        ctx = CheckContext(
+            result=result, content=content, lines=lines,
+            regions=regions, filepath=filepath, root=root,
+            tokens=tokens,
+        )
+        for rule in RULE_REGISTRY:
+            try:
+                issues = rule.check(ctx)
+                if issues:
+                    result.issues.extend(issues)
+            except Exception:
+                pass
 
     result.score = _compute_score(result.issues)
 

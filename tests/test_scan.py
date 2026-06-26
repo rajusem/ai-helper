@@ -3,8 +3,12 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_helper.scan import (
+    RULE_REGISTRY,
     Issue,
+    Rule,
     ScanResult,
     _analyze_file,
     _baseline_key,
@@ -25,6 +29,7 @@ from ai_helper.scan import (
     _parse_content_regions,
     _print_sarif,
     _save_baseline,
+    register_rule,
 )
 
 # ── _parse_content_regions ──────────────────────────────────────────
@@ -1003,3 +1008,79 @@ class TestBaseline:
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output
+
+
+# ── Item 4.5: Rule system ─────────────────────────────────────────
+
+
+class TestRuleSystem:
+    def setup_method(self):
+        RULE_REGISTRY.clear()
+
+    def teardown_method(self):
+        RULE_REGISTRY.clear()
+
+    def test_register_custom_rule(self):
+        class MyRule(Rule):
+            id = "CUSTOM_001"
+            name = "test rule"
+
+            def check(self, ctx):
+                return [Issue(
+                    category="custom", severity="info",
+                    message="custom finding", rule_id=self.id,
+                )]
+
+        register_rule(MyRule())
+        assert len(RULE_REGISTRY) == 1
+
+    def test_duplicate_id_rejected(self):
+        r1 = Rule()
+        r1.id = "CUSTOM_001"
+        register_rule(r1)
+        r2 = Rule()
+        r2.id = "CUSTOM_001"
+        with pytest.raises(ValueError, match="Duplicate"):
+            register_rule(r2)
+
+    def test_non_custom_prefix_rejected(self):
+        r = Rule()
+        r.id = "TCOST999"
+        with pytest.raises(ValueError, match="CUSTOM_"):
+            register_rule(r)
+
+    def test_empty_id_rejected(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            register_rule(Rule())
+
+    def test_custom_rule_executed_in_analyze(self, tmp_path):
+        class TagRule(Rule):
+            id = "CUSTOM_TAG"
+            name = "tag check"
+
+            def check(self, ctx):
+                return [Issue(
+                    category="custom", severity="info",
+                    message="tagged", rule_id=self.id,
+                )]
+
+        register_rule(TagRule())
+        f = tmp_path / "AGENTS.md"
+        f.write_text("# Test\ncontent")
+        result = _analyze_file(f, tmp_path)
+        custom = [i for i in result.issues if i.rule_id == "CUSTOM_TAG"]
+        assert len(custom) == 1
+
+    def test_custom_rule_error_handled(self, tmp_path):
+        class BadRule(Rule):
+            id = "CUSTOM_BAD"
+            name = "bad"
+
+            def check(self, ctx):
+                raise RuntimeError("boom")
+
+        register_rule(BadRule())
+        f = tmp_path / "AGENTS.md"
+        f.write_text("# Test\ncontent")
+        result = _analyze_file(f, tmp_path)
+        assert not any(i.rule_id == "CUSTOM_BAD" for i in result.issues)
