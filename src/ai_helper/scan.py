@@ -190,7 +190,7 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     _check_token_waste(result, content, lines, regions)
     _check_hedging_and_filler(result, content)
     _check_hallucination_risks(result, content, lines)
-    _check_output_quality(result, content, lines)
+    _check_output_quality(result, content, lines, filepath)
     _check_failure_mode_framing(result, content, lines)
     _check_nested_references(result, content, lines)
     _check_redundant_context(result, content, filepath)
@@ -300,7 +300,7 @@ def _check_structure(
         for line, region in zip(lines, regions or ["content"] * len(lines))
         if region == "content"
     )
-    if len(lines) > 30 and not has_headers:
+    if len(lines) > 50 and not has_headers:
         result.issues.append(Issue(
             category="structure",
             severity="suggestion",
@@ -504,7 +504,7 @@ def _check_hallucination_risks(
         r"|structured output|```)",
         content, re.IGNORECASE,
     ))
-    if not has_output_format and len(lines) > 20:
+    if not has_output_format and len(lines) > 50:
         result.issues.append(Issue(
             category="hallucination-risk",
             severity="suggestion",
@@ -514,31 +514,17 @@ def _check_hallucination_risks(
             rule_id="HRISK002",
         ))
 
-    has_constraints = bool(re.search(
-        r"(do not|don'?t|never|must not|avoid|only|forbidden"
-        r"|prohibited|restrict)",
-        content, re.IGNORECASE,
-    ))
-    if not has_constraints and len(lines) > 15:
-        result.issues.append(Issue(
-            category="hallucination-risk",
-            severity="info",
-            message="No negative constraints found",
-            fix="Add explicit 'do NOT' rules for common failure modes"
-            " — agents follow positive instructions better with"
-            " guardrails",
-            rule_id="HRISK003",
-        ))
 
 
 def _check_output_quality(
-    result: ScanResult, content: str, lines: list[str]
+    result: ScanResult, content: str, lines: list[str],
+    filepath: Path | None = None,
 ) -> None:
     has_examples = bool(re.search(
         r"(example|e\.g\.|for instance|sample|```)",
         content, re.IGNORECASE,
     ))
-    if not has_examples and len(lines) > 20:
+    if not has_examples and len(lines) > 50:
         result.issues.append(Issue(
             category="output-quality",
             severity="suggestion",
@@ -552,7 +538,8 @@ def _check_output_quality(
         r"(verify|validate|check|confirm|test|assert|evidence|prove)",
         content, re.IGNORECASE,
     ))
-    if not has_verification and len(lines) > 30:
+    fname = filepath.name.lower() if filepath else ""
+    if not has_verification and len(lines) > 50 and "review" not in fname and "audit" not in fname:
         result.issues.append(Issue(
             category="output-quality",
             severity="suggestion",

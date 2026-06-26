@@ -1,6 +1,7 @@
 """Unit tests for scan.py — bug fixes + R1 conditions."""
 
 import json
+from pathlib import Path
 
 from ai_helper.scan import (
     Issue,
@@ -9,6 +10,8 @@ from ai_helper.scan import (
     _check_broken_references,
     _check_compound_instructions,
     _check_description_quality,
+    _check_hallucination_risks,
+    _check_output_quality,
     _check_role_identity,
     _check_structure,
     _check_termination_conditions,
@@ -231,7 +234,7 @@ class TestEncoding:
 
 class TestHeaderCheck:
     def _make_long_file(self, extra_lines: list[str]) -> tuple:
-        base = [f"line {i}" for i in range(35)]
+        base = [f"line {i}" for i in range(55)]
         lines = base + extra_lines
         content = "\n".join(lines)
         regions = _parse_content_regions(lines)
@@ -248,7 +251,7 @@ class TestHeaderCheck:
         )
 
     def test_real_header_detected(self):
-        lines = ["## Section"] + [f"line {i}" for i in range(35)]
+        lines = ["## Section"] + [f"line {i}" for i in range(55)]
         content = "\n".join(lines)
         regions = _parse_content_regions(lines)
         result = ScanResult(file="test.md")
@@ -258,7 +261,7 @@ class TestHeaderCheck:
         )
 
     def test_shebang_not_header(self):
-        lines = ["#!/bin/bash"] + [f"line {i}" for i in range(35)]
+        lines = ["#!/bin/bash"] + [f"line {i}" for i in range(55)]
         content = "\n".join(lines)
         regions = _parse_content_regions(lines)
         result = ScanResult(file="test.md")
@@ -300,7 +303,7 @@ class TestRuleIDs:
             "TCOST006", "TCOST007", "TCOST008", "TCOST009", "TCOST010",
             "TCOST011",
             "DESC001", "DESC002", "DESC003", "DESC004", "DESC005",
-            "HRISK001", "HRISK002", "HRISK003",
+            "HRISK001", "HRISK002",
             "OQUAL001", "OQUAL002",
             "FRAME001", "FRAME002",
             "BPRAC001", "BPRAC002",
@@ -775,3 +778,116 @@ class TestCompoundInstructions:
         result = ScanResult(file="test.md")
         _check_compound_instructions(result, "\n".join(lines), lines, regions)
         assert not any(i.rule_id == "HRISK004" for i in result.issues)
+
+
+# ── Theme 5: Softened/removed noisy checks ───────────────────────
+
+
+class TestHRISK002Threshold:
+    """HRISK002 threshold raised from 20 to 50."""
+
+    def test_40_line_file_no_trigger(self):
+        lines = [f"instruction line {i}" for i in range(40)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_hallucination_risks(result, content, lines)
+        assert not any(i.rule_id == "HRISK002" for i in result.issues)
+
+    def test_55_line_file_triggers(self):
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_hallucination_risks(result, content, lines)
+        assert any(i.rule_id == "HRISK002" for i in result.issues)
+
+
+class TestOQUAL001Threshold:
+    """OQUAL001 threshold raised from 20 to 50."""
+
+    def test_40_line_file_no_trigger(self):
+        lines = [f"instruction line {i}" for i in range(40)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_output_quality(result, content, lines)
+        assert not any(i.rule_id == "OQUAL001" for i in result.issues)
+
+    def test_55_line_file_triggers(self):
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_output_quality(result, content, lines)
+        assert any(i.rule_id == "OQUAL001" for i in result.issues)
+
+
+class TestHRISK003Removed:
+    """HRISK003 removed entirely — no file should trigger it."""
+
+    def test_55_line_file_no_hrisk003(self):
+        lines = [f"do something positive line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_hallucination_risks(result, content, lines)
+        assert not any(i.rule_id == "HRISK003" for i in result.issues)
+
+
+class TestSTRUCT003Threshold:
+    """STRUCT003 threshold raised from 30 to 50."""
+
+    def test_49_line_file_no_trigger(self):
+        lines = [f"line {i}" for i in range(49)]
+        content = "\n".join(lines)
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_structure(result, content, lines, regions)
+        assert not any(i.rule_id == "STRUCT003" for i in result.issues)
+
+    def test_51_line_file_triggers(self):
+        lines = [f"line {i}" for i in range(51)]
+        content = "\n".join(lines)
+        regions = _parse_content_regions(lines)
+        result = ScanResult(file="test.md")
+        _check_structure(result, content, lines, regions)
+        assert any(i.rule_id == "STRUCT003" for i in result.issues)
+
+
+class TestOQUAL002ThresholdAndFilename:
+    """OQUAL002 threshold raised from 30 to 50 + review/audit suppression."""
+
+    def test_40_line_file_no_trigger(self):
+        lines = [f"instruction line {i}" for i in range(40)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_output_quality(result, content, lines)
+        assert not any(i.rule_id == "OQUAL002" for i in result.issues)
+
+    def test_55_line_file_triggers(self):
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        result = ScanResult(file="test.md")
+        _check_output_quality(result, content, lines)
+        assert any(i.rule_id == "OQUAL002" for i in result.issues)
+
+    def test_review_file_suppressed(self):
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        filepath = Path("agents/review-agent.md")
+        result = ScanResult(file="review-agent.md")
+        _check_output_quality(result, content, lines, filepath)
+        assert not any(i.rule_id == "OQUAL002" for i in result.issues)
+
+    def test_audit_file_suppressed(self):
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        filepath = Path("agents/audit.md")
+        result = ScanResult(file="audit.md")
+        _check_output_quality(result, content, lines, filepath)
+        assert not any(i.rule_id == "OQUAL002" for i in result.issues)
+
+    def test_review_uppercase_suppressed(self):
+        """Case-insensitive filename matching."""
+        lines = [f"instruction line {i}" for i in range(55)]
+        content = "\n".join(lines)
+        filepath = Path("agents/CodeReview.md")
+        result = ScanResult(file="CodeReview.md")
+        _check_output_quality(result, content, lines, filepath)
+        assert not any(i.rule_id == "OQUAL002" for i in result.issues)
