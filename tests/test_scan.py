@@ -1579,3 +1579,41 @@ class TestDelegationSkips:
         lines = content.splitlines()
         _check_hallucination_risks(result, content, lines, agent, tmp_path)
         assert any(i.rule_id == "HRISK002" for i in result.issues)
+
+
+class TestBPRAC003LinearSteps:
+    def test_linear_steps_only_no_flag(self):
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: Understand the code\nStep 2: Make changes\nStep 3: Run tests\n"
+        result = ScanResult(file="SKILL.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(result, content, lines, regions)
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_iteration_keyword_still_flags(self):
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: Run tests\nRetry until all pass\n"
+        result = ScanResult(file="SKILL.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(result, content, lines, regions)
+        assert any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_loop_keyword_still_flags(self):
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nPhase 1: Init\nLoop over all items and process\n"
+        result = ScanResult(file="SKILL.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(result, content, lines, regions)
+        assert any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_linear_with_termination_no_flag(self):
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: Run tests\nRetry failures\nMaximum 3 attempts\n"
+        result = ScanResult(file="SKILL.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(result, content, lines, regions)
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)

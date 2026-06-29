@@ -1289,15 +1289,16 @@ def _check_termination_conditions(
         line for line, r in zip(lines, rgns) if r == "content"
     ).lower()
 
-    step_patterns = [
-        r"\bstep\s+\d", r"\bphase\s+\d", r"\biteration\b",
-        r"\bloop\b", r"\brepeat\b", r"\bretry\b",
+    linear_patterns = [r"\bstep\s+\d", r"\bphase\s+\d"]
+    iteration_patterns = [
+        r"\biteration\b", r"\bloop\b", r"\brepeat\b", r"\bretry\b",
         r"\bcall\b.*\bagent\b",
     ]
-    has_steps = any(
-        re.search(p, content_text) for p in step_patterns
-    )
-    if not has_steps:
+    has_linear = any(re.search(p, content_text) for p in linear_patterns)
+    has_iteration = any(re.search(p, content_text) for p in iteration_patterns)
+    if not has_linear and not has_iteration:
+        return
+    if has_linear and not has_iteration:
         return
 
     term_patterns = [

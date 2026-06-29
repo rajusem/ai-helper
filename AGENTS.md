@@ -67,4 +67,4 @@ local-docs/             # Research & reference (gitignored, not committed)
 - `ai-helper optimize` — RTK integration (install, status, report, discover)
 - `ai-helper doctor` — detects Claude Code, OpenCode, Cursor
 - `ai-helper init` — planned
-- 228 tests passing
+- 232 tests passing
