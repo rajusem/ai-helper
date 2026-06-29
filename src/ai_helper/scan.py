@@ -43,6 +43,40 @@ SKILL_DIRS = [
 ]
 
 
+def _is_root_reference_doc(filepath: Path, root: Path) -> bool:
+    """True if filepath is a root-level reference doc (not an agent prompt)."""
+    return (
+        filepath.parent == root
+        and filepath.name.lower() == "agents.md"
+    )
+
+
+def _has_skill_delegation(
+    content: str, filepath: Path | None = None, root: Path | None = None,
+) -> bool:
+    """Detect if content delegates to a skill file that exists on disk."""
+    delegation_patterns = [
+        re.compile(
+            r"\b(?:follow|invoke|execute|defer to|delegate to)\b"
+            r".{0,60}\b(?:skill|SKILL\.md)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:see|refer to)\b.{0,60}SKILL\.md\b",
+            re.IGNORECASE,
+        ),
+    ]
+    if not any(p.search(content) for p in delegation_patterns):
+        return False
+    if filepath and root:
+        skill_dirs = [root / d for d in ("skills", ".opencode/skills", ".claude/skills")]
+        for d in skill_dirs:
+            if d.exists() and any(d.rglob("SKILL.md")):
+                return True
+        return False
+    return True
+
+
 @dataclass
 class Issue:
     category: str
@@ -206,6 +240,39 @@ def _load_baseline(path: Path) -> dict:
         return {}
 
 
+def _is_git_url(path: str) -> bool:
+    return path.startswith("https://")
+
+
+def _clone_repo(url: str) -> Path:
+    """Clone a Git repo to a temp dir. HTTPS only."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("git"):
+        raise RuntimeError("git is not installed")
+
+    tmp = Path(tempfile.mkdtemp(prefix="ai-helper-scan-"))
+    try:
+        env = {**__import__("os").environ, "GIT_LFS_SKIP_SMUDGE": "1"}
+        console.print(f"Cloning [bold]{url}[/bold]...")
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "--single-branch",
+             "--filter=blob:none", "--", url, str(tmp)],
+            capture_output=True, text=True, check=True,
+            timeout=120, env=env,
+        )
+        return tmp
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        msg = (e.stderr or "").strip()[:200]
+        raise RuntimeError(f"Clone failed: {msg}") from None
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError("Clone timed out (120s)") from None
+
+
 def run_scan(
     path: str = ".",
     fmt: str = "table",
@@ -222,14 +289,63 @@ def run_scan(
 
     Returns severity counts: {"warning": N, "suggestion": N, "info": N}.
     """
+    import shutil
+
     empty_counts: dict[str, int] = {
         "warning": 0, "suggestion": 0, "info": 0,
     }
 
-    target = Path(path).resolve()
+    clone_dir: Path | None = None
+    display_path = path
+
+    if _is_git_url(path):
+        if save_baseline:
+            console.print(
+                "[yellow]--save-baseline is not supported"
+                " for remote repos[/yellow]"
+            )
+            return empty_counts
+        try:
+            clone_dir = _clone_repo(path)
+            target = clone_dir
+        except RuntimeError as e:
+            console.print(f"[bold red]{e}[/bold red]")
+            return empty_counts
+    else:
+        target = Path(path).resolve()
+        display_path = str(target)
+
     if not target.exists():
         console.print(f"[bold red]Path not found: {path}[/bold red]")
         return empty_counts
+
+    try:
+        return _run_scan_on_dir(
+            target, display_path, fmt, severity_filter, verbose,
+            disabled_rules, fail_on, save_baseline,
+            diff_baseline, baseline_path, report,
+        )
+    finally:
+        if clone_dir and clone_dir.exists():
+            shutil.rmtree(clone_dir, ignore_errors=True)
+
+
+def _run_scan_on_dir(
+    target: Path,
+    display_path: str,
+    fmt: str,
+    severity_filter: str | None,
+    verbose: bool,
+    disabled_rules: set[str] | None,
+    fail_on: str | None,
+    save_baseline: bool,
+    diff_baseline: bool,
+    baseline_path: str | None,
+    report: bool,
+) -> dict[str, int]:
+    empty_counts: dict[str, int] = {
+        "warning": 0, "suggestion": 0, "info": 0,
+    }
 
     # Load project config and merge with CLI args (CLI wins)
     config = _load_config(target)
@@ -254,7 +370,7 @@ def run_scan(
     console.print()
     console.print(
         f"Scanning [bold]{len(files)} file{'s' if len(files) != 1 else ''}"
-        f"[/bold] in {target}"
+        f"[/bold] in {display_path}"
     )
     console.print()
 
@@ -401,14 +517,14 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     _check_description_quality(result, content)
     _check_token_waste(result, content, lines, regions)
     _check_hedging_and_filler(result, content)
-    _check_hallucination_risks(result, content, lines)
-    _check_output_quality(result, content, lines, filepath)
+    _check_hallucination_risks(result, content, lines, filepath, root)
+    _check_output_quality(result, content, lines, filepath, root)
     _check_failure_mode_framing(result, content, lines)
     _check_nested_references(result, content, lines)
     _check_redundant_context(result, content, filepath)
     _check_best_practices(result, content, lines)
     _check_broken_references(result, content, filepath, regions)
-    _check_termination_conditions(result, content, lines, regions)
+    _check_termination_conditions(result, content, lines, regions, filepath, root)
     _check_role_identity(result, content, lines, filepath)
     _check_compound_instructions(result, content, lines, regions)
 
@@ -722,7 +838,8 @@ def _find_duplicate_instructions(lines: list[str]) -> int:
 
 
 def _check_hallucination_risks(
-    result: ScanResult, content: str, lines: list[str]
+    result: ScanResult, content: str, lines: list[str],
+    filepath: Path | None = None, root: Path | None = None,
 ) -> None:
     vague_patterns = [
         (r"\bdo (?:the |your )?best\b", "do your best"),
@@ -749,7 +866,8 @@ def _check_hallucination_risks(
         r"|structured output|```)",
         content, re.IGNORECASE,
     ))
-    if not has_output_format and len(lines) > 50:
+    delegates = _has_skill_delegation(content, filepath, root)
+    if not has_output_format and len(lines) > 50 and not delegates:
         result.issues.append(Issue(
             category="hallucination-risk",
             severity="suggestion",
@@ -763,13 +881,14 @@ def _check_hallucination_risks(
 
 def _check_output_quality(
     result: ScanResult, content: str, lines: list[str],
-    filepath: Path | None = None,
+    filepath: Path | None = None, root: Path | None = None,
 ) -> None:
     has_examples = bool(re.search(
         r"(example|e\.g\.|for instance|sample|```)",
         content, re.IGNORECASE,
     ))
-    if not has_examples and len(lines) > 50:
+    delegates = _has_skill_delegation(content, filepath, root)
+    if not has_examples and len(lines) > 50 and not delegates:
         result.issues.append(Issue(
             category="output-quality",
             severity="suggestion",
@@ -849,6 +968,30 @@ def _find_conflicting_instructions(content: str) -> str | None:
     return None
 
 
+def _count_hedging(phrase: str, content: str) -> int:
+    """Count hedging occurrences using word boundaries.
+
+    For 'consider', also excludes interrogative review questions
+    and section headings (not hedging).
+    """
+    pat = re.compile(r"\b" + re.escape(phrase) + r"\b", re.IGNORECASE)
+    if phrase != "consider":
+        return len(pat.findall(content))
+    count = 0
+    interrogative = re.compile(
+        r"\b(?:did|does|do|has|have|whether)\b", re.IGNORECASE,
+    )
+    for line in content.splitlines():
+        for m in pat.finditer(line):
+            prefix = line[:m.start()]
+            if interrogative.search(prefix):
+                continue
+            if line.lstrip().startswith("#"):
+                continue
+            count += 1
+    return count
+
+
 def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
     """Hedging and filler tokens waste context. Based on cclint's
     karpathy rule and AgentLinter's compressible-padding detection."""
@@ -859,7 +1002,7 @@ def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
     ]
     found_hedging = [
         h for h in hedging
-        if content.lower().count(h) >= 2
+        if _count_hedging(h, content) >= 2
     ]
     if found_hedging:
         result.issues.append(Issue(
@@ -1039,16 +1182,20 @@ def _check_broken_references(
     """STRUCT006: file paths referenced in content that don't exist."""
     lines = content.splitlines()
     rgns = regions or ["content"] * len(lines)
-    content_text = "\n".join(
-        line for line, r in zip(lines, rgns) if r == "content"
-    )
 
     ref_pattern = re.compile(
         r"(?:read|see|refer to|check|load|reference|cat|open)\s+"
         r"[`'\"]?([a-zA-Z0-9_./-]+\.\w{1,10})[`'\"]?",
         re.IGNORECASE,
     )
-    refs = ref_pattern.findall(content_text)
+
+    # Collect refs per-line (content regions only) to preserve line context
+    refs_with_lines: list[tuple[str, str]] = []
+    for line, rgn in zip(lines, rgns):
+        if rgn != "content":
+            continue
+        for ref in ref_pattern.findall(line):
+            refs_with_lines.append((ref, line))
 
     project_root = filepath.parent
     for _ in range(10):
@@ -1058,8 +1205,22 @@ def _check_broken_references(
             break
         project_root = project_root.parent
 
+    # Patterns for target-repo context (compound phrases to avoid over-matching)
+    _target_ctx = re.compile(
+        r"\b(?:target repo|target project|their repo|cloned repo"
+        r"|the codebase|the repository|in the repo|repo's)\b",
+        re.IGNORECASE,
+    )
+    _example_list = re.compile(
+        r"\b(?:such as|e\.g\.|like|including|files like)\s+",
+        re.IGNORECASE,
+    )
+
     broken = []
-    for ref in refs:
+    seen = set()
+    for ref, ref_line in refs_with_lines:
+        if ref in seen:
+            continue
         if ref.startswith("http"):
             continue
         if ref.startswith("/"):
@@ -1068,8 +1229,32 @@ def _check_broken_references(
             continue
         resolved_local = filepath.parent / ref
         resolved_root = project_root / ref
-        if not resolved_local.exists() and not resolved_root.exists():
-            broken.append(ref)
+        if resolved_local.exists() or resolved_root.exists():
+            continue
+
+        # Skip files created at runtime (search full content including code fences)
+        escaped = re.escape(ref)
+        creation_patterns = [
+            rf">\s*['\"]?{escaped}",
+            rf"touch\s+['\"]?{escaped}",
+            rf"tee\s+['\"]?{escaped}",
+            rf"cat\s*<<.*>\s*['\"]?{escaped}",
+        ]
+        if any(re.search(p, content, re.IGNORECASE) for p in creation_patterns):
+            continue
+
+        # Skip target-repo references (compound context on the same line)
+        if _target_ctx.search(ref_line):
+            continue
+
+        # Skip refs in example lists (e.g., "files like go.mod, pyproject.toml")
+        if _example_list.search(ref_line) and ref in ref_line:
+            m = _example_list.search(ref_line)
+            if m and ref_line.index(ref) > m.start():
+                continue
+
+        seen.add(ref)
+        broken.append(ref)
 
     if broken:
         shown = broken[:3]
@@ -1090,9 +1275,13 @@ def _check_broken_references(
 def _check_termination_conditions(
     result: ScanResult, content: str, lines: list[str],
     regions: list[str] | None = None,
+    filepath: Path | None = None, root: Path | None = None,
 ) -> None:
     """BPRAC003: multi-step skills without termination limits."""
     if len(lines) < 20:
+        return
+
+    if filepath and root and _is_root_reference_doc(filepath, root):
         return
 
     rgns = regions or ["content"] * len(lines)

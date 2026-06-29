@@ -17,6 +17,7 @@ from ai_helper.scan import (
     _check_compound_instructions,
     _check_description_quality,
     _check_hallucination_risks,
+    _check_hedging_and_filler,
     _check_output_quality,
     _check_redundant_context,
     _check_role_identity,
@@ -24,8 +25,12 @@ from ai_helper.scan import (
     _check_termination_conditions,
     _check_token_waste,
     _compute_score,
+    _count_hedging,
     _find_conflicting_instructions,
     _find_duplicate_instructions,
+    _has_skill_delegation,
+    _is_git_url,
+    _is_root_reference_doc,
     _load_baseline,
     _load_config,
     _parse_content_regions,
@@ -1273,3 +1278,304 @@ class TestConflictMessages:
         msg = _find_conflicting_instructions(content)
         assert msg is not None
         assert "verbose/thorough" not in msg
+
+
+# ── URL scanning ──────────────────────────────────────────────────
+
+
+class TestUrlScanning:
+    def test_https_detected(self):
+        assert _is_git_url("https://github.com/org/repo")
+
+    def test_git_at_not_detected(self):
+        assert not _is_git_url("git@github.com:org/repo.git")
+
+    def test_http_not_detected(self):
+        assert not _is_git_url("http://github.com/org/repo")
+
+    def test_local_path_not_detected(self):
+        assert not _is_git_url(".")
+        assert not _is_git_url("/path/to/project")
+        assert not _is_git_url("relative/path")
+
+
+# ── False-positive fixes ────────────────────────────────────────────
+
+
+class TestIsRootReferenceDoc:
+    def test_root_agents_md(self, tmp_path):
+        f = tmp_path / "AGENTS.md"
+        assert _is_root_reference_doc(f, tmp_path)
+
+    def test_agents_in_subdir_not_root(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        f = d / "AGENTS.md"
+        assert not _is_root_reference_doc(f, tmp_path)
+
+    def test_root_skill_md_not_reference_doc(self, tmp_path):
+        f = tmp_path / "SKILL.md"
+        assert not _is_root_reference_doc(f, tmp_path)
+
+
+class TestHasSkillDelegation:
+    def test_follow_skill(self, tmp_path):
+        skill_dir = tmp_path / ".opencode" / "skills" / "review"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Review skill")
+        content = "Follow the issue-investigate skill for details."
+        assert _has_skill_delegation(content, tmp_path / "agent.md", tmp_path)
+
+    def test_see_skill_md(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "deploy"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Deploy")
+        content = "See SKILL.md for output format."
+        assert _has_skill_delegation(content, tmp_path / "agent.md", tmp_path)
+
+    def test_invoke_skill(self, tmp_path):
+        skill_dir = tmp_path / ".claude" / "skills" / "test"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Test")
+        content = "Invoke the deploy skill to run."
+        assert _has_skill_delegation(content, tmp_path / "agent.md", tmp_path)
+
+    def test_use_your_skill_not_delegation(self, tmp_path):
+        content = "Use your debugging skill to find the issue."
+        assert not _has_skill_delegation(content, tmp_path / "agent.md", tmp_path)
+
+    def test_delegation_to_missing_skill(self, tmp_path):
+        content = "Follow the nonexistent skill for details."
+        assert not _has_skill_delegation(content, tmp_path / "agent.md", tmp_path)
+
+
+class TestSTRUCT006RuntimeCreated:
+    def test_echo_created_file_not_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(
+            "Check .audit/validation.json for results.\n"
+            "```bash\n"
+            "echo '{}' > .audit/validation.json\n"
+            "```\n"
+        )
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_touch_created_file_not_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(
+            "Load output.json for the report.\n"
+            "```\n"
+            "touch output.json\n"
+            "```\n"
+        )
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_genuine_broken_ref_still_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read missing-file.md for context.")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_creation_of_different_file_not_confused(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(
+            "Read report.json for results.\n"
+            "```\n"
+            "echo '{}' > other.json\n"
+            "```\n"
+        )
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert any(i.rule_id == "STRUCT006" for i in result.issues)
+
+
+class TestSTRUCT006TargetRepo:
+    def test_target_repo_context_not_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Check go.mod in the target repo for versions.")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_example_list_not_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(
+            "Check files like go.mod, pyproject.toml for dependencies."
+        )
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_project_word_alone_not_suppressed(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Read config.yaml for project settings.")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert any(i.rule_id == "STRUCT006" for i in result.issues)
+
+    def test_the_repository_context_not_flagged(self, tmp_path):
+        skill = tmp_path / "SKILL.md"
+        skill.write_text("Check setup.py in the repository for metadata.")
+        result = ScanResult(file="SKILL.md")
+        content = skill.read_text()
+        regions = _parse_content_regions(content.splitlines())
+        _check_broken_references(result, content, skill, regions)
+        assert not any(i.rule_id == "STRUCT006" for i in result.issues)
+
+
+class TestTCOST008WordBoundary:
+    def test_consideration_not_counted(self):
+        content = (
+            "Missing considerations for edge cases.\n"
+            "Add considerations for performance.\n"
+        )
+        assert _count_hedging("consider", content) == 0
+
+    def test_retry_to_not_counted_for_try_to(self):
+        content = "On failure, retry to connect. Will retry to verify."
+        assert _count_hedging("try to", content) == 0
+
+    def test_interrogative_consider_not_counted(self):
+        content = (
+            "Did the plan consider alternatives?\n"
+            "Did you consider edge cases?\n"
+        )
+        assert _count_hedging("consider", content) == 0
+
+    def test_real_hedging_consider_counted(self):
+        content = (
+            "Consider adding tests for coverage.\n"
+            "Also consider using a linter.\n"
+        )
+        assert _count_hedging("consider", content) == 2
+
+    def test_heading_consider_not_counted(self):
+        content = (
+            "## Alternatives Considered\n"
+            "## Options Considered\n"
+        )
+        assert _count_hedging("consider", content) == 0
+
+    def test_hedging_filler_with_word_boundaries(self):
+        content = (
+            "Consider using X. Consider adding Y.\n"
+            "Try to verify the output. Try to confirm it.\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_hedging_and_filler(result, content)
+        rule_ids = [i.rule_id for i in result.issues]
+        assert "TCOST008" in rule_ids
+
+
+class TestBPRAC003RootRefDoc:
+    def test_root_agents_md_skipped(self, tmp_path):
+        agents = tmp_path / "AGENTS.md"
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: understand\nPhase 2: plan\nIteration loop\n"
+        agents.write_text(content)
+        result = ScanResult(file="AGENTS.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(
+            result, content, lines, regions, agents, tmp_path,
+        )
+        assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_claude_md_not_skipped(self, tmp_path):
+        claude = tmp_path / "CLAUDE.md"
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: foo\nIteration loop\nRetry until done\n"
+        claude.write_text(content)
+        result = ScanResult(file="CLAUDE.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(
+            result, content, lines, regions, claude, tmp_path,
+        )
+        assert any(i.rule_id == "BPRAC003" for i in result.issues)
+
+    def test_agent_file_in_subdir_still_caught(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        agent = d / "fix.md"
+        content = "\n".join([f"line {i}" for i in range(25)])
+        content += "\nStep 1: investigate\nRetry the operation\n"
+        agent.write_text(content)
+        result = ScanResult(file="agents/fix.md")
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        _check_termination_conditions(
+            result, content, lines, regions, agent, tmp_path,
+        )
+        assert any(i.rule_id == "BPRAC003" for i in result.issues)
+
+
+class TestDelegationSkips:
+    def _make_skill_tree(self, tmp_path):
+        d = tmp_path / ".opencode" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# Review\n```json\n{}\n```\nExample output")
+
+    def test_hrisk002_skipped_with_delegation(self, tmp_path):
+        self._make_skill_tree(tmp_path)
+        content = "\n".join([f"Line {i}" for i in range(55)])
+        content += "\nFollow the issue-investigate skill.\n"
+        agent = tmp_path / "agents" / "fix.md"
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_text(content)
+        result = ScanResult(file="agents/fix.md")
+        lines = content.splitlines()
+        _check_hallucination_risks(result, content, lines, agent, tmp_path)
+        assert not any(i.rule_id == "HRISK002" for i in result.issues)
+
+    def test_oqual001_skipped_with_delegation(self, tmp_path):
+        self._make_skill_tree(tmp_path)
+        content = "\n".join([f"Line {i}" for i in range(55)])
+        content += "\nFollow the code-review skill.\n"
+        agent = tmp_path / "agents" / "review.md"
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_text(content)
+        result = ScanResult(file="agents/review.md")
+        lines = content.splitlines()
+        _check_output_quality(result, content, lines, agent, tmp_path)
+        assert not any(i.rule_id == "OQUAL001" for i in result.issues)
+
+    def test_hrisk002_caught_without_delegation(self, tmp_path):
+        content = "\n".join([f"Line {i}" for i in range(55)])
+        agent = tmp_path / "agents" / "fix.md"
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_text(content)
+        result = ScanResult(file="agents/fix.md")
+        lines = content.splitlines()
+        _check_hallucination_risks(result, content, lines, agent, tmp_path)
+        assert any(i.rule_id == "HRISK002" for i in result.issues)
+
+    def test_delegation_to_missing_skill_still_flags(self, tmp_path):
+        content = "\n".join([f"Line {i}" for i in range(55)])
+        content += "\nFollow the nonexistent skill.\n"
+        agent = tmp_path / "agents" / "fix.md"
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_text(content)
+        result = ScanResult(file="agents/fix.md")
+        lines = content.splitlines()
+        _check_hallucination_risks(result, content, lines, agent, tmp_path)
+        assert any(i.rule_id == "HRISK002" for i in result.issues)

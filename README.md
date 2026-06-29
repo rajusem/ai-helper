@@ -41,7 +41,7 @@ ai-helper config set --model sonnet --small-model haiku
 
 ### 1. Skill Scanner (`ai-helper scan`)
 
-Analyze AI skill files (SKILL.md, CLAUDE.md, agent .md, .cursorrules) for common issues.
+Analyze AI skill files (SKILL.md, CLAUDE.md, agent.md, .cursorrules) for common issues.
 
 ```bash
 ai-helper scan                          # Scan current project
@@ -176,7 +176,7 @@ uv run ruff check src/
 | 4. Smart Defaults | RTK integration, model recommendations, context calculator |
 | 5. Developer Setup | `doctor` working, `init` planned |
 
-195 tests passing. Works with Claude Code, OpenCode, and Cursor.
+228 tests passing. Works with Claude Code, OpenCode, and Cursor.
 
 ## License
 
