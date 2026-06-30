@@ -98,6 +98,17 @@ class ToolStats:
         return sum(s.cache_read_tokens for s in self.sessions)
 
     @property
+    def total_cache_write(self) -> int:
+        return sum(s.cache_write_tokens for s in self.sessions)
+
+    @property
+    def cache_hit_rate(self) -> float | None:
+        denom = self.total_cache_read + self.total_cache_write + self.total_input
+        if denom == 0:
+            return None
+        return self.total_cache_read / denom * 100
+
+    @property
     def total_cost(self) -> float:
         return sum(s.cost_usd for s in self.sessions)
 
@@ -564,6 +575,13 @@ def _print_summary(all_stats: list[ToolStats], period: str) -> None:
         "Cache Read",
         *[
             _format_tokens(ts.total_cache_read) if ts.total_cache_read else "[dim]N/A[/dim]"
+            for ts in all_stats
+        ],
+    )
+    table.add_row(
+        "Cache Hit Rate",
+        *[
+            f"{ts.cache_hit_rate:.0f}%" if ts.cache_hit_rate is not None else "[dim]N/A[/dim]"
             for ts in all_stats
         ],
     )
