@@ -518,6 +518,9 @@ def _parse_cursor_ts(ts_ms) -> datetime | None:
         return None
 
 
+LOCAL_PRICING = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
+
+
 def _estimate_cost(
     model: str,
     input_tokens: int,
@@ -525,7 +528,10 @@ def _estimate_cost(
     cache_read: int,
     cache_write: int,
 ) -> float:
-    prices = PRICING.get(model, DEFAULT_PRICING)
+    if _normalize_model_tier(model) == "local":
+        prices = LOCAL_PRICING
+    else:
+        prices = PRICING.get(model, DEFAULT_PRICING)
     cost = (
         input_tokens * prices["input"]
         + output_tokens * prices["output"]
