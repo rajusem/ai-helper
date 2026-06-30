@@ -1,13 +1,13 @@
 # Pillar 4: Smart Defaults & Optimization
 
-## Command
+## Commands
 
 ```bash
-ai-helper optimize install          # install optimization tools (RTK, Ponytail)
-ai-helper optimize status           # show what's active
-ai-helper optimize report           # show measured savings
-ai-helper optimize discover         # find missed optimization opportunities
-ai-helper optimize recommend        # suggest optimizations based on usage patterns
+ai-helper optimize status           # show what's installed and active
+ai-helper optimize install rtk      # install RTK for detected tools
+ai-helper optimize install ponytail # show Ponytail install instructions
+ai-helper optimize report           # show RTK token savings (wraps rtk gain)
+ai-helper optimize discover         # find missed optimization opportunities (wraps rtk discover)
 ```
 
 ## Problem
@@ -15,88 +15,78 @@ ai-helper optimize recommend        # suggest optimizations based on usage patte
 Developers overspend on AI tool usage because:
 1. Tool output (git, find, ls) is verbose — agents read thousands of tokens of noise
 2. Code generation is unconstrained — agents write more code than needed
-3. Model selection is manual — developers default to the most expensive model
-4. No visibility into what could be optimized
+3. No visibility into what could be optimized
 
 ## Approach
 
-**Show, don't enforce.** Everything is opt-in. We recommend optimizations, show their impact, and let users decide. No restrictions, no mandatory constraints.
+Show, don't enforce. Everything is opt-in. We surface third-party optimization tools with honest assessments of their impact, and recommend built-in optimizations (model routing, prompt caching) that have the biggest real-world impact.
 
-### Design Principles
+## Optimization Tools
 
-- Every optimization is a **suggestion**, not a mandate
-- Show the **cost impact** of choices, let the user decide
-- `--strict` mode available for teams that want enforcement, but default is advisory
-- Like ESLint `--fix`: auto-fix what's safe, warn about the rest
-- Users can **override anytime** — nothing is locked
+### RTK — Input Token Compression
 
-## Optimization Layers
-
-### Layer 1: Input Compression (RTK)
-
-[RTK](https://github.com/rtk-ai/rtk) (66k stars, Apache-2.0) compresses tool output before your AI reads it.
+[RTK](https://github.com/rtk-ai/rtk) (67k stars, Apache-2.0) is a Rust CLI proxy that intercepts Bash tool calls and compresses output before the LLM sees it.
 
 ```bash
 ai-helper optimize install rtk
-# Runs: rtk init -g (Claude Code) / rtk init --opencode (OpenCode)
-# Cursor: investigate integration path
+# Runs: rtk init -g (Claude Code), rtk init --opencode (OpenCode), rtk init --agent cursor (Cursor)
 ```
 
-**Honest assessment:** RTK claims significant savings on git/find/ls commands. The user's local tests showed 49-91% reduction on various commands. However, RTK's official benchmarks page shows "No benchmark data yet" — their README figures are self-described as estimates. We present savings as "measured on your machine" via `rtk gain`, not as guaranteed percentages.
+**Honest assessment:** RTK compresses Bash tool output (ANSI codes, progress bars, passing test lines). Per-command savings are real (grep 30%, gh pr diff 38%, cargo test 98%). However, RTK only intercepts Bash calls — Claude Code built-in tools (Read, Grep, Glob) bypass hooks entirely. An independent evaluation (CodePointer, 500 sessions, 614M tokens) found token compression tools save **0.5-3% of the actual bill** because 78% of tool output bypasses the hook and 71% of the bill is cache-create + output tokens.
 
-### Layer 2: Code Generation Defaults (Ponytail)
+### Ponytail — Behavioral Minimalism
 
-[Ponytail](https://github.com/DietrichGebert/ponytail) (57.4k stars, MIT) provides a priority ladder for AI code generation.
+[Ponytail](https://github.com/DietrichGebert/ponytail) (66.5k stars, MIT) injects a minimalism ruleset into AI coding agents.
 
 ```bash
 ai-helper optimize install ponytail
-# Installs as a global skill/rule for each tool
+# Shows install instructions per tool (plugin marketplace for Claude Code, JSON config for OpenCode)
 ```
 
-**Honest assessment:** Official agentic benchmark shows -20% cost, -22% tokens, -54% LOC (Haiku 4.5, n=4). Our earlier estimates of 25-43% were from local tests, not published benchmarks. Issue #121 shows costs can *increase by 55%* in Cursor completion-forced scenarios. We recommend Ponytail for agentic CLI workflows (Claude Code, OpenCode) and warn about IDE completion workflows (Cursor).
+**Honest assessment:** Behavioral approach — constrains agents to write less code. First-party benchmark shows ~20% cost reduction, but claims of 54% LOC reduction did not survive adversarial verification (n=4, single model). A simpler YAGNI one-liner prompt achieves comparable savings per Ponytail's own benchmark.
 
-### Layer 3: Model Recommendations
+### Headroom — Full-Stack Context Compression
 
-Based on usage patterns from Pillar 2 (Stats), suggest model routing:
+[Headroom](https://github.com/chopratejas/headroom) (53.6k stars, Apache-2.0) is a Python proxy that compresses everything the agent reads via content-aware compressors.
+
+Detected in `optimize status` if installed. Not auto-installed due to heavier footprint (Python 3.10+, proxy process).
+
+## Real-World Cost Impact
+
+Based on deep research (103 agents, 21 sources, adversarially verified):
+
+| Technique | Real Savings | Source |
+|-----------|-------------|--------|
+| Prompt caching (built-in, don't break it) | 84-90% of input costs | Verified from real sessions |
+| Model routing (opusplan, Opus→Sonnet) | 60-77% | Published pricing |
+| Lean CLAUDE.md + on-demand skills | Reduces base context cost | Anthropic recommendation |
+| Token compression tools (RTK/Headroom) | 0.5-3% of bill | Independent evaluation (CodePointer) |
+
+The biggest savings come from built-in features (prompt caching, model routing), not third-party tools.
+
+## Status Output
 
 ```
-ai-helper optimize recommend
+$ ai-helper optimize status
 
-Recommendations based on your last 30 days:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. You used Opus for 12 investigation sessions.
-   → Sonnet often matches Opus quality for investigation tasks.
-   → Estimated savings: ~$15/month if you switch.
-   → Try it: ai-helper config set --model sonnet (revert anytime)
+RTK  installed (rtk 0.42.4)
+  v Claude Code: active
+  v OpenCode: active
+  v Cursor: active
+Ponytail  found (~/.claude/plugins/ponytail)
+Headroom  not installed
 
-2. You ran 45 quick file lookups on Opus.
-   → Haiku handles simple lookups well at 95% less cost.
-   → Estimated savings: ~$8/month.
+Tip: These tools compress tokens (0.5-3% bill savings). For bigger
+impact, use model routing (ai-helper config set --model sonnet) and
+keep CLAUDE.md lean.
 ```
-
-## MVP Features
-
-1. **`optimize install`** — one-command setup for RTK across installed tools
-2. **`optimize status`** — show which optimizations are active
-3. **`optimize report`** — show measured savings (wraps `rtk gain`)
-4. **`optimize discover`** — find missed opportunities (wraps `rtk discover`)
 
 ## Future Features
 
-- Ponytail installation as a global skill
-- Model recommendation engine based on usage patterns
-- Context window hygiene tips ("Your CLAUDE.md is 5K tokens — here's how to trim it")
-- Session management suggestions ("/compact at 250K tokens, not 500K")
-- Prompt optimization tips based on observed patterns
-- Team-level optimization policies
+- Model recommendation engine based on usage patterns from stats
+- Context window hygiene tips
+- Session management suggestions
 
-## Competitors
+## Reference
 
-No direct competitor combines optimization tooling with usage tracking and config management. RTK and Ponytail are standalone tools — ai-helper wraps them for easier setup and unified reporting.
-
-## MCP Integration
-
-As an MCP tool, optimization features can be accessed during AI sessions:
-- "How much has RTK saved me today?"
-- "Install RTK for this project"
-- "What optimizations am I missing?"
+- [Cost Optimization Guide](../cost-optimization.md) — validated techniques ranked by real-world impact

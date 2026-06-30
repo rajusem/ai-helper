@@ -1,74 +1,80 @@
 # Pillar 2: Usage Insights & Analytics
 
-## Command
+## Commands
 
 ```bash
-ai-helper stats [--period 7d|30d|all] [--tool claude|opencode|cursor|all] [--format table|json]
-ai-helper stats compare    # cross-tool comparison
-ai-helper stats recommend  # model/tool recommendations
+ai-helper stats [--period 1d|7d|30d|all] [--tool claude|opencode|cursor|all]
+ai-helper stats recommend    # what-if model savings
+ai-helper stats compare      # cross-tool cost per session by model tier
+ai-helper stats context      # context window usage per tool
 ```
 
 ## Problem
 
-Developers use multiple AI coding tools but have no unified view of their spending, token usage, or efficiency. Existing trackers (CodeBurn, Tokscale, TokenTracker) count tokens but don't provide actionable recommendations or cross-tool comparisons.
+Developers use multiple AI coding tools but have no unified view of their spending, token usage, or efficiency. Each tool only shows its own data.
 
 ## Approach
 
-**Insights, not just tracking.** Don't compete with CodeBurn on dashboard prettiness. Differentiate with:
-1. Cross-tool comparison (Claude Code vs OpenCode vs Cursor for the same type of work)
-2. Actionable recommendations ("Switch to Sonnet for investigations to save ~$X/week")
-3. Team awareness (who's spending what, where)
+Cross-tool analytics with actionable recommendations. Read local session data — no proxy, no API keys, nothing leaves the machine.
 
 ### Data Sources
 
-| Tool | Session Location | Format |
-|------|-----------------|--------|
-| Claude Code | `~/.claude/projects/*/sessions/` | JSONL |
-| OpenCode | TBD — investigate session storage | TBD |
-| Cursor | `~/.cursor/` | SQLite |
+| Tool | Session Location | Format | What We Read |
+|------|-----------------|--------|--------------|
+| Claude Code | `~/.claude/projects/*/*.jsonl` | JSONL | model, tokens (input/output/cache_read/cache_write), usage, timestamps |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | model (JSON field), tokens, timestamps |
+| Cursor | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | SQLite | session headers from composerHeaders; tokens unreliable (98% zero) |
 
-All data stays local. Read-only access to existing session files — no proxy, no wrapper.
+All data stays local. Read-only access to existing session files.
 
-## MVP Features
+## Implemented Features
 
-1. **Cross-tool summary** — total tokens, cost estimate, time across all three tools
-2. **Per-session breakdown** — model used, tokens in/out, estimated cost, duration
-3. **Period comparison** — "This week vs last week" trends
-4. **Model usage distribution** — how much Opus vs Sonnet vs Haiku
-5. **Cost estimation** — using LiteLLM pricing data (with honest caveat that estimates may drift)
+### Summary Table (`ai-helper stats`)
+- Sessions, input/output tokens, cache read, **cache hit rate**, estimated cost, total time
+- Per-tool breakdown (Claude Code, OpenCode, Cursor side by side)
+- Recent sessions with model, turns, output, cost, duration, project
+- Model usage distribution across all tools
 
-## Future Features
+### What-If Savings (`stats recommend`)
+- "If 20/40/60% of Opus turns used Sonnet, save $X/week"
+- Based on actual usage patterns, not hypothetical
+- Flat-rate plan caveat included
 
-- **Cross-tool comparison**: "You spent $12 on Claude Code and $8 on Cursor for similar tasks"
-- **Model recommendations**: "Based on your patterns, switching routine tasks to Sonnet saves ~40%"
-- **Waste detection**: sessions with high token usage but no file changes
-- **Team dashboards**: aggregate usage across team members
-- **Budget awareness**: "Team has used $500 of $1000 this month"
-- **Cost allocation**: group spending by project, team, or task type
-- **Export**: CSV, JSON for custom analysis
-- **Trend alerts**: "Your daily spend has increased 3x this week"
+### Cross-Tool Comparison (`stats compare`)
+- Cost per session by model tier across all tools
+- Opus $X/session vs Sonnet $Y/session vs Local $0.00
 
-## Competitors
+### Context Usage (`stats context`)
+- Average input/output tokens per session per tool
+- Estimated context window usage
 
-| Tool | Stars | Strength | Gap |
-|------|-------|----------|-----|
-| CodeBurn | 8.3k | 31 tools, waste optimization, yield tracking | No recommendations, no cross-tool comparison |
-| Tokscale | 3.9k | 37 tools, Rust core, fast | Tracking only, no insights |
-| TokenTracker | 767 | Native desktop apps, rate limits | No recommendations |
-| Tokdash | 22 | Lightweight | Limited tools |
+### Cache Hit Rate
+- Calculated as `cache_read / (cache_read + cache_write + input) * 100`
+- Typical healthy rate: 85-94% for Claude Code
+- Shows N/A for tools without cache data (Cursor)
 
-**Differentiation:** ai-helper stats provides *recommendations*, not just numbers. And it's part of a larger toolkit — insights feed into config decisions ("you should use Sonnet more") and optimization suggestions ("install RTK to save on tool output").
+## Cost Estimation
+
+Uses per-model pricing from Anthropic's published rates:
+
+| Model | Input | Output | Cache Read | Cache Write |
+|-------|-------|--------|------------|-------------|
+| Opus 4.5-4.8 | $15/M | $75/M | $1.50/M | $18.75/M |
+| Sonnet 4.5-4.6 | $3/M | $15/M | $0.30/M | $3.75/M |
+| Fable 5 | $1/M | $5/M | $0.10/M | $1.25/M |
+| Haiku 4.5 | $0.80/M | $4/M | $0.08/M | $1.00/M |
 
 ## Honest Caveats
 
-- All cost estimates are approximations based on LiteLLM pricing data
-- Actual billing may differ from estimates
-- Anthropic warns: "Do not bill end users or trigger financial decisions from these fields"
+- All cost estimates are approximations based on published pricing
+- Actual billing may differ — Anthropic warns against using usage fields for financial decisions
+- Cursor token data is unreliable (shows "--" for output/cost, not "0")
+- Flat-rate plans (Max, Team) are not affected by per-token pricing
 - We present estimates clearly labeled as estimates
 
-## MCP Integration
+## Future Features
 
-As an MCP tool, `stats` can be queried during AI sessions:
-- "How much have I spent today?"
-- "What model am I using most?"
-- "Compare my Claude Code vs Cursor usage this week"
+- Waste detection: sessions with high token usage but no file changes
+- Budget awareness: "Team has used $500 of $1000 this month"
+- Export: CSV, JSON for custom analysis
+- Trend alerts: "Your daily spend has increased 3x this week"
