@@ -41,7 +41,12 @@ def run_status() -> None:
             console.print(f"  [yellow]![/yellow] {msg}")
     else:
         console.print("[dim]RTK[/dim]  not installed")
-        console.print("  Install: [bold]brew install rtk-ai/tap/rtk[/bold]")
+        console.print(
+            "  Install: [bold]brew install rtk-ai/tap/rtk[/bold]"
+            " or [bold]curl -fsSL"
+            " https://raw.githubusercontent.com/rtk-ai/rtk/"
+            "refs/heads/master/install.sh | sh[/bold]"
+        )
 
     ponytail = _check_ponytail()
     if ponytail:
@@ -49,6 +54,20 @@ def run_status() -> None:
     else:
         console.print("[dim]Ponytail[/dim]  not detected")
 
+    headroom_path = shutil.which("headroom")
+    if headroom_path:
+        version = _run_cmd([headroom_path, "--version"])
+        console.print(f"[green]Headroom[/green]  installed ({version.strip()})")
+    else:
+        console.print("[dim]Headroom[/dim]  not installed")
+
+    console.print()
+    console.print(
+        "[dim]Tip: These tools compress tokens (0.5-3% bill savings)."
+        " For bigger impact, use model routing"
+        " (ai-helper config set --model sonnet) and keep"
+        " CLAUDE.md lean.[/dim]"
+    )
     console.print()
 
 
@@ -56,7 +75,7 @@ def run_report() -> None:
     rtk_path = shutil.which("rtk")
     if not rtk_path:
         console.print("[bold red]RTK not installed.[/bold red]")
-        console.print("Install: [bold]brew install rtk-ai/tap/rtk[/bold]")
+        _print_rtk_install()
         return
 
     output = _run_cmd([rtk_path, "gain"])
@@ -70,7 +89,7 @@ def run_discover() -> None:
     rtk_path = shutil.which("rtk")
     if not rtk_path:
         console.print("[bold red]RTK not installed.[/bold red]")
-        console.print("Install: [bold]brew install rtk-ai/tap/rtk[/bold]")
+        _print_rtk_install()
         return
 
     output = _run_cmd([rtk_path, "discover"])
@@ -87,7 +106,11 @@ def _install_rtk() -> None:
         console.print("[bold red]RTK not installed.[/bold red]")
         console.print("Install RTK first:")
         console.print("  macOS:  [bold]brew install rtk-ai/tap/rtk[/bold]")
-        console.print("  Linux:  [bold]curl -fsSL https://rtk.sh | sh[/bold]")
+        console.print(
+            "  Linux:  [bold]curl -fsSL"
+            " https://raw.githubusercontent.com/rtk-ai/rtk/"
+            "refs/heads/master/install.sh | sh[/bold]"
+        )
         return
 
     version = _run_cmd([rtk_path, "--version"]).strip()
@@ -143,18 +166,48 @@ def _install_rtk_opencode(rtk_path: str, tool) -> None:
 
 
 def _install_rtk_cursor(rtk_path: str, tool) -> None:
-    console.print("  [yellow]![/yellow] Cursor: RTK integration not yet supported")
-    console.print("       Follow RTK docs for Cursor setup: https://github.com/rtk-ai/rtk")
+    console.print("  Setting up RTK for Cursor...")
+    result = subprocess.run(
+        [rtk_path, "init", "-g", "--agent", "cursor"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        console.print("  [green]v[/green] Cursor: RTK hooks installed")
+    else:
+        console.print("  [red]x[/red] Cursor: RTK init failed")
+        if result.stderr:
+            console.print(f"       {result.stderr.strip()}")
 
 
 def _install_ponytail() -> None:
-    console.print("[yellow]Ponytail auto-install coming soon.[/yellow]")
+    console.print("[yellow]Ponytail install varies by tool:[/yellow]")
     console.print(
-        "Install manually: https://github.com/DietrichGebert/ponytail"
+        "  Claude Code: Run [bold]/plugin marketplace add"
+        " DietrichGebert/ponytail[/bold] then"
+        " [bold]/plugin install ponytail@ponytail[/bold]"
+    )
+    console.print(
+        '  OpenCode:    Add [bold]'
+        '{"plugin": ["@dietrichgebert/ponytail"]}[/bold]'
+        " to opencode.json"
+    )
+    console.print(
+        "  Details:     https://github.com/DietrichGebert/ponytail"
+    )
+
+
+def _print_rtk_install() -> None:
+    console.print(
+        "Install: [bold]brew install rtk-ai/tap/rtk[/bold]"
+        " or [bold]curl -fsSL"
+        " https://raw.githubusercontent.com/rtk-ai/rtk/"
+        "refs/heads/master/install.sh | sh[/bold]"
     )
 
 
 def _check_rtk_hooks() -> dict[str, bool]:
+    from pathlib import Path
+
     tools = detect_tools()
     result = {}
     for tool in tools:
@@ -163,29 +216,50 @@ def _check_rtk_hooks() -> dict[str, bool]:
         if tool.name == "Claude Code":
             result[tool.name] = tool.extras.get("rtk_active", False)
         elif tool.name == "OpenCode":
-            from pathlib import Path
-
             plugin_path = (
                 Path.home() / ".config" / "opencode"
                 / "node_modules" / "rtk-opencode"
             )
             result[tool.name] = plugin_path.exists()
         elif tool.name == "Cursor":
-            result[tool.name] = False
+            hooks_json = Path.home() / ".cursor" / "hooks.json"
+            result[tool.name] = (
+                hooks_json.exists()
+                and "rtk" in hooks_json.read_text(errors="replace").lower()
+            )
     return result
 
 
 def _check_ponytail() -> str | None:
-    # Check common ponytail locations
+    import json
     from pathlib import Path
 
-    candidates = [
-        Path.home() / ".claude" / "skills" / "ponytail",
-        Path.home() / ".config" / "opencode" / "skills" / "ponytail",
-    ]
-    for path in candidates:
-        if path.exists():
-            return str(path)
+    # Claude Code: plugin marketplace (current install method)
+    plugin_dir = Path.home() / ".claude" / "plugins" / "ponytail"
+    if plugin_dir.exists():
+        return str(plugin_dir)
+
+    # Claude Code: legacy skill directory
+    skill_dir = Path.home() / ".claude" / "skills" / "ponytail"
+    if skill_dir.exists():
+        return str(skill_dir)
+
+    # OpenCode: check opencode.json for ponytail plugin
+    oc_config = Path.home() / ".config" / "opencode" / "opencode.json"
+    if oc_config.exists():
+        try:
+            data = json.loads(oc_config.read_text())
+            plugins = data.get("plugin", [])
+            if any("ponytail" in str(p).lower() for p in plugins):
+                return "opencode plugin"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # OpenCode: legacy skill directory
+    oc_skill = Path.home() / ".config" / "opencode" / "skills" / "ponytail"
+    if oc_skill.exists():
+        return str(oc_skill)
+
     return None
 
 
