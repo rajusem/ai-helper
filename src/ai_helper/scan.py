@@ -367,12 +367,13 @@ def _run_scan_on_dir(
         )
         return empty_counts
 
-    console.print()
-    console.print(
-        f"Scanning [bold]{len(files)} file{'s' if len(files) != 1 else ''}"
-        f"[/bold] in {display_path}"
-    )
-    console.print()
+    if fmt == "table":
+        console.print()
+        console.print(
+            f"Scanning [bold]{len(files)} file{'s' if len(files) != 1 else ''}"
+            f"[/bold] in {display_path}"
+        )
+        console.print()
 
     results = []
     for filepath in files:
