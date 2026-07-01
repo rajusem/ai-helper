@@ -2,154 +2,107 @@
 
 ## Design Principles
 
-1. **MCP-first** — core logic lives in an MCP server; CLI wraps it for terminal use
-2. **Cross-tool** — one implementation serves Claude Code, OpenCode, and Cursor
-3. **Local-first** — all data stays on the user's machine; no cloud dependency
-4. **Composable** — each pillar works independently; use what you need
+1. **Cross-tool** — one implementation serves Claude Code, OpenCode, and Cursor
+2. **Local-first** — all data stays on the user's machine; no cloud dependency
+3. **Composable** — each pillar works independently; use what you need
+4. **Help, don't restrict** — everything is a suggestion, not a gate
 
-## High-Level Architecture
+## Tech Stack
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    ai-helper                         │
-│                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-│  │   CLI    │  │MCP Server│  │  Tool Plugins    │   │
-│  │ (direct  │  │ (stdio/  │  │                  │   │
-│  │  usage)  │  │  SSE)    │  │ ┌──────────────┐ │   │
-│  └────┬─────┘  └────┬─────┘  │ │ Claude Code  │ │   │
-│       │              │        │ │ (skill/hook) │ │   │
-│       │              │        │ ├──────────────┤ │   │
-│       ▼              ▼        │ │  OpenCode    │ │   │
-│  ┌──────────────────────┐     │ │ (TS plugin)  │ │   │
-│  │      Core Engine     │     │ ├──────────────┤ │   │
-│  │                      │     │ │   Cursor     │ │   │
-│  │ ┌──────┐ ┌────────┐  │     │ │  (rules)    │ │   │
-│  │ │ Scan │ │ Stats  │  │     │ └──────────────┘ │   │
-│  │ ├──────┤ ├────────┤  │     └──────────────────┘   │
-│  │ │Config│ │Optimize│  │                            │
-│  │ ├──────┤ ├────────┤  │                            │
-│  │ │ Init │ │ Doctor │  │                            │
-│  │ └──────┘ └────────┘  │                            │
-│  └──────────────────────┘                            │
-└─────────────────────────────────────────────────────┘
-```
-
-## Why MCP-First
-
-All three target tools support MCP (Model Context Protocol):
-
-| Tool | MCP Transport | Config Location |
-|------|--------------|-----------------|
-| Claude Code | stdio | `.claude/settings.json` → `mcpServers` |
-| OpenCode | stdio | `.opencode/config.toml` or similar |
-| Cursor | stdio | `.cursor/mcp.json` |
-
-Building as an MCP server means:
-- One implementation, three tools get access
-- Tools can call ai-helper capabilities during AI sessions
-- No wrapper/proxy overhead — direct integration
-- CLI provides the same features for standalone use
+| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| Language | Python 3.11+ | Rich ecosystem, fast development, cross-platform |
+| CLI framework | Click | Mature, composable commands and groups |
+| Terminal output | Rich | Tables, panels, colors, progress indicators |
+| Config parsing | PyYAML | YAML config file support |
+| Package manager | uv | Fast, modern Python tooling |
+| License | Apache-2.0 | Permissive, enterprise-friendly |
 
 ## Data Flow
 
-### Session Data Reading
+### Session Data Reading (read-only, no network)
 
 ```
-Claude Code  →  ~/.claude/projects/*/sessions/  →  JSONL files
-OpenCode     →  ~/.opencode/sessions/            →  (format TBD)
-Cursor       →  ~/.cursor/                       →  SQLite database
+Claude Code  →  ~/.claude/projects/*/*.jsonl        →  JSONL (model, tokens, cache, timestamps)
+OpenCode     →  ~/.local/share/opencode/opencode.db →  SQLite (model as JSON, tokens, timestamps)
+Cursor       →  state.vscdb + ai-code-tracking.db   →  SQLite (session headers, AI attribution)
                           ↓
                    ai-helper stats
                           ↓
-                 Unified analytics
+                 Unified analytics (cross-tool summary, cache hit rate, cost estimates)
 ```
 
 ### Config Management
 
 ```
-ai-helper config set --model opus --small-model sonnet
+ai-helper config set --model sonnet --small-model haiku
                           ↓
          ┌────────────────┼────────────────┐
          ↓                ↓                ↓
   Claude Code         OpenCode          Cursor
-  settings.json       config.toml     .cursor/settings
-  model: opus         model: opus      model: opus
-  small: sonnet       small: sonnet    small: sonnet
+  ~/.claude/          ~/.config/        (UI only —
+  settings.json       opencode/         shows instruction)
+                      opencode.json
 ```
 
-### Security Scanning
+### Skill File Scanning
 
 ```
-ai-helper scan
+ai-helper scan [path|URL]
       ↓
-  ┌───┼───┐
-  ↓   ↓   ↓
-Trivy Grype OSV    ← deterministic scanners (parallel)
-  ↓   ↓   ↓
-  └───┼───┘
+  Discover files (CLAUDE.md, AGENTS.md, .cursorrules, agents/*.md, skills/*/SKILL.md)
       ↓
-  Dedup & merge
+  Analyze each file (33 rules across 7 categories)
       ↓
-  LLM triage       ← AI prioritization & fix suggestions
+  Score 0-100 with actionable fix suggestions
       ↓
-  Unified report
+  Output: table (human), JSON (programmatic), SARIF (CI/CD)
 ```
 
 ## Tool Integration Points
 
 ### Claude Code
-- **Plugin**: skills (ai-helper commands), hooks (post-session tracking), MCP server
-- **Config**: `~/.claude/settings.json` (global), `.claude/settings.json` (project)
-- **Sessions**: `~/.claude/projects/*/sessions/*.jsonl`
-- **Reference**: https://code.claude.com/docs/en/plugins-reference
+- **Config**: `~/.claude/settings.json` (global)
+- **Sessions**: `~/.claude/projects/*/*.jsonl`
+- **Context files**: CLAUDE.md, AGENTS.md at project root; `.claude/skills/`, `.claude/agents/`
+- **RTK hooks**: PreToolUse in settings.json
 
 ### OpenCode
-- **Plugin**: JS/TS modules hooking into events (`tool.execute.before`, etc.)
-- **Config**: `.opencode/config.toml` or similar
-- **Sessions**: format to be investigated
-- **Reference**: https://opencode.ai/docs/plugins/
+- **Config**: `~/.config/opencode/opencode.json`
+- **Sessions**: `~/.local/share/opencode/opencode.db` (SQLite, XDG data dir)
+- **Binary**: `~/.opencode/bin/opencode` (not in PATH by default)
+- **Context files**: `.opencode/agents/*.md`, `.opencode/skills/*/SKILL.md`
 
 ### Cursor
-- **Plugin**: Rules, MCP servers, Commands
-- **Config**: `.cursor/` directory, VS Code settings inheritance
-- **Sessions**: SQLite database
-- **Reference**: https://cursor.com/docs/reference/plugins
+- **Config**: `~/Library/Application Support/Cursor/User/settings.json` (macOS)
+- **Sessions**: `state.vscdb` (composerHeaders in ItemTable)
+- **AI tracking**: `~/.cursor/ai-tracking/ai-code-tracking.db`
+- **Context files**: `.cursorrules`
+- **Limitation**: No local token/cost data (tokens show N/A)
 
-## Tech Stack (Proposed)
-
-| Component | Choice | Rationale |
-|-----------|--------|-----------|
-| Language | TypeScript | Ecosystem alignment (MCP SDK, all three tools use JS/TS plugins) |
-| Runtime | Node.js 20+ | Stable, cross-platform, familiar to target audience |
-| MCP SDK | `@modelcontextprotocol/sdk` | Official MCP TypeScript SDK |
-| CLI framework | Commander.js or oclif | Mature, well-documented |
-| Security scanners | Trivy, Grype (shelled out) | Industry standard, no wrapper needed |
-| Pricing data | LiteLLM pricing DB | 2200+ models, community maintained |
-| Package manager | npm | Widest reach for installation |
-
-## Directory Structure (Planned)
+## Directory Structure
 
 ```
 ai-helper/
-├── src/
-│   ├── core/               # Shared logic
-│   │   ├── scanner/        # Security scanner orchestrator
-│   │   ├── stats/          # Usage analytics engine
-│   │   ├── config/         # Config manager
-│   │   ├── optimize/       # Smart defaults & RTK/Ponytail integration
-│   │   └── setup/          # Init & doctor
-│   ├── mcp/                # MCP server entry point
-│   ├── cli/                # CLI entry point
-│   └── plugins/            # Tool-specific plugins
-│       ├── claude-code/    # Claude Code plugin package
-│       ├── opencode/       # OpenCode plugin package
-│       └── cursor/         # Cursor rules/config
-├── docs/
-│   ├── architecture.md     # This file
-│   └── pillars/            # Per-pillar design docs
-├── tests/
-├── package.json
-├── tsconfig.json
-└── README.md
+├── src/ai_helper/
+│   ├── cli.py              # CLI entry point (Click commands and groups)
+│   ├── scan.py             # Skill file scanner (33 rules, SARIF, baseline/diff)
+│   ├── stats.py            # Usage analytics (JSONL + SQLite readers, cost estimation)
+│   ├── config.py           # Config manager (read/write across tools, validation)
+│   ├── optimize.py         # RTK/Ponytail/Headroom integration
+│   ├── doctor.py           # Health check (tool detection, issue reporting)
+│   └── tools/              # Tool detection layer
+│       ├── base.py         # ToolDetector base class, ToolInfo dataclass
+│       ├── registry.py     # detect_tools(), get_tool()
+│       ├── claude_code.py  # Claude Code detection
+│       ├── opencode.py     # OpenCode detection
+│       └── cursor.py       # Cursor detection
+├── tests/                  # 232 tests (pytest)
+├── docs/                   # Design docs (public)
+├── local-docs/             # Research & reference (gitignored)
+├── .githooks/              # Pre-commit secret detection
+├── CONTRIBUTING.md         # Contributor guide
+├── AGENTS.md               # Project context (CLAUDE.md symlinks here)
+├── pyproject.toml          # Python 3.11+, deps: click, pyyaml, rich
+└── Makefile                # install, test, lint, scan, doctor, stats targets
 ```

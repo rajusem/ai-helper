@@ -327,8 +327,8 @@ def _read_opencode_sessions(
                 " tokens_cache_read, tokens_cache_write,"
                 " time_created, time_updated"
                 " FROM session"
-                " WHERE time_created >= ?"
-                " ORDER BY time_created DESC",
+                " WHERE COALESCE(time_updated, time_created) >= ?"
+                " ORDER BY COALESCE(time_updated, time_created) DESC",
                 (cutoff_ms,),
             ).fetchall()
 
@@ -426,7 +426,8 @@ def _read_cursor_sessions(
                     composers = data.get("allComposers", [])
                     for c in composers:
                         created = c.get("createdAt", 0)
-                        if created < cutoff_ms:
+                        updated = c.get("lastUpdatedAt", created)
+                        if updated < cutoff_ms:
                             continue
                         ts = _parse_cursor_ts(created)
                         name = c.get("name", "") or ""

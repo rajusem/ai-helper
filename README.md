@@ -17,7 +17,10 @@ A few things that aren't available built-in:
 
 ```bash
 # Install
-pip install ai-helper   # or: uv pip install ai-helper
+git clone https://github.com/rajusem/ai-helper.git
+cd ai-helper
+uv sync --extra dev
+uv tool install -e . --force   # global install
 
 # Health check — see what's installed and configured
 ai-helper doctor
@@ -45,13 +48,16 @@ Analyze AI skill files (SKILL.md, CLAUDE.md, agent.md, .cursorrules) for common 
 
 ```bash
 ai-helper scan                          # Scan current project
+ai-helper scan /path/to/project         # Scan a local directory
+ai-helper scan https://github.com/org/repo  # Scan a GitHub repo by URL
+ai-helper scan . -v                     # Verbose — show all issues per file
 ai-helper scan --format sarif           # SARIF output for CI
 ai-helper scan --fail-on warning        # Exit 1 on warnings (CI gate)
 ai-helper scan --save-baseline          # Save current findings
 ai-helper scan --diff                   # Show only new issues since baseline
 ```
 
-35+ checks across 7 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
+33 rules across 7 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
 
 [Design doc](docs/pillars/01-skill-scanner.md)
 
