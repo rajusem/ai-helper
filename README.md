@@ -182,7 +182,7 @@ uv run ruff check src/
 | 4. Smart Defaults | RTK integration, model recommendations, context calculator |
 | 5. Developer Setup | `doctor` working, `init` planned |
 
-243 tests passing. Works with Claude Code, OpenCode, and Cursor.
+253 tests passing. Works with Claude Code, OpenCode, and Cursor.
 
 ## License
 

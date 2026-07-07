@@ -36,7 +36,7 @@ Static analysis of skill files — check for detectable patterns that correlate 
 |--------|----------|---------------|
 | TCOST | Token cost | TCOST001 (file too long), TCOST003 (consider trimming), TCOST007 (near-duplicates), TCOST008 (hedging language), TCOST010 (long paragraphs) |
 | DESC | Description quality | DESC001 (description too long), DESC003 (second-person in description), DESC005 (no "Use when...") |
-| HRISK | Hallucination risk | HRISK001 (vague instruction), HRISK002 (no output format), HRISK004 (compound instructions) |
+| HRISK | Hallucination risk | HRISK001 (vague instruction), HRISK002 (no output format), HRISK004 (compound instructions), HRISK005 (untrusted content handling) |
 | FRAME | Framing | FRAME001 (heavy prohibitions without positive alternatives) |
 | OQUAL | Output quality | OQUAL001 (no examples), OQUAL002 (no verification steps), OQUAL003 (no role statement) |
 | BPRAC | Best practice | BPRAC001 (no model in frontmatter), BPRAC002 (no error handling), BPRAC003 (no termination condition) |
@@ -63,4 +63,3 @@ The scanner automatically finds:
 
 - Cross-tool compatibility (patterns that work in Claude Code but not Cursor)
 - Model-appropriate complexity (Opus specified for a Sonnet-level task?)
-- Prompt injection risk (does the skill handle untrusted input?)
