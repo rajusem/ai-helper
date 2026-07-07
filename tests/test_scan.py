@@ -16,6 +16,7 @@ from ai_helper.scan import (
     _check_broken_references,
     _check_compound_instructions,
     _check_description_quality,
+    _check_failure_mode_framing,
     _check_hallucination_risks,
     _check_hedging_and_filler,
     _check_output_quality,
@@ -1617,3 +1618,141 @@ class TestBPRAC003LinearSteps:
         regions = _parse_content_regions(lines)
         _check_termination_conditions(result, content, lines, regions)
         assert not any(i.rule_id == "BPRAC003" for i in result.issues)
+
+
+class TestCodeFenceFiltering:
+    def _build_content_text(self, content):
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        ct_lines = []
+        in_fence = False
+        for line, rgn in zip(lines, regions):
+            if rgn == "content":
+                ct_lines.append(line)
+                in_fence = False
+            elif not in_fence:
+                ct_lines.append("")
+                in_fence = True
+        return "\n".join(ct_lines)
+
+    def test_hedging_in_code_fence_not_counted(self):
+        content = "Some text\n```\nconsider this\nconsider that\n```\n"
+        content_text = self._build_content_text(content)
+        assert _count_hedging("consider", content_text) == 0
+
+    def test_hedging_in_content_still_counted(self):
+        content = "Consider adding tests.\nConsider using a linter.\n"
+        content_text = self._build_content_text(content)
+        assert _count_hedging("consider", content_text) == 2
+
+    def test_vague_instruction_in_code_fence_not_flagged(self):
+        content = "\n".join([f"line {i}" for i in range(55)])
+        content += "\n```bash\n# if possible use cache\n```\n"
+        content_text = self._build_content_text(content)
+        result = ScanResult(file="test.md")
+        lines = content.splitlines()
+        _check_hallucination_risks(
+            result, content, lines, content_text=content_text,
+        )
+        assert not any(i.rule_id == "HRISK001" for i in result.issues)
+
+    def test_prohibition_in_code_fence_not_counted(self):
+        content = (
+            "```bash\n# do not remove\n# do not delete\n"
+            "# do not skip\n# do not ignore\n"
+            "# do not modify\n# do not change\n# do not alter\n```\n"
+        )
+        content_text = self._build_content_text(content)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content_text, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_content_only_still_flagged(self):
+        content = "Consider adding tests.\nConsider using a linter.\n"
+        content_text = self._build_content_text(content)
+        result = ScanResult(file="test.md")
+        _check_hedging_and_filler(result, content_text)
+        assert any(i.rule_id == "TCOST008" for i in result.issues)
+
+    def test_hrisk002_detects_code_fence_as_output_format(self):
+        content = "\n".join([f"line {i}" for i in range(55)])
+        content += "\n```json\n{}\n```\n"
+        content_text = self._build_content_text(content)
+        result = ScanResult(file="test.md")
+        lines = content.splitlines()
+        _check_hallucination_risks(
+            result, content, lines, content_text=content_text,
+        )
+        assert not any(i.rule_id == "HRISK002" for i in result.issues)
+
+
+class TestFRAME003BareDirectives:
+    def test_five_bare_directives_flagged(self):
+        content = (
+            "NEVER skip tests\n"
+            "MUST validate input\n"
+            "ALWAYS run linter\n"
+            "DO NOT commit secrets\n"
+            "NEVER force push\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert any(i.rule_id == "FRAME003" for i in result.issues)
+
+    def test_four_bare_directives_not_flagged(self):
+        content = (
+            "NEVER skip tests\n"
+            "MUST validate input\n"
+            "ALWAYS run linter\n"
+            "DO NOT commit secrets\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME003" for i in result.issues)
+
+    def test_directives_with_rationale_not_flagged(self):
+        content = (
+            "NEVER skip tests because they catch regressions\n"
+            "MUST validate input since it prevents injection\n"
+            "ALWAYS run linter to prevent style drift\n"
+            "DO NOT commit secrets -- they end up in git history\n"
+            "NEVER force push to avoid overwriting work\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME003" for i in result.issues)
+
+    def test_code_fence_directives_not_counted(self):
+        content = (
+            "Some instructions\n"
+            "```\n"
+            "NEVER do X\nMUST do Y\nALWAYS do Z\n"
+            "DO NOT do W\nNEVER do V\n"
+            "```\n"
+        )
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        ct_lines = []
+        in_fence = False
+        for line, rgn in zip(lines, regions):
+            if rgn == "content":
+                ct_lines.append(line)
+                in_fence = False
+            elif not in_fence:
+                ct_lines.append("")
+                in_fence = True
+        content_text = "\n".join(ct_lines)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content_text, lines)
+        assert not any(i.rule_id == "FRAME003" for i in result.issues)
+
+    def test_must_not_counts_as_one(self):
+        content = (
+            "MUST NOT skip tests\n"
+            "MUST NOT ignore errors\n"
+            "MUST NOT commit secrets\n"
+            "MUST NOT force push\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME003" for i in result.issues)

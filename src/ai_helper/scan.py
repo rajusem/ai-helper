@@ -106,6 +106,7 @@ class CheckContext:
     filepath: Path
     root: Path
     tokens: int
+    content_text: str = ""
 
 
 class Rule:
@@ -513,17 +514,30 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     lines = content.splitlines()
     regions = _parse_content_regions(lines)
 
+    # Build content_text: content-only lines with blank-line placeholders
+    # for removed code fences (preserves paragraph boundaries for TCOST010)
+    _ct_lines: list[str] = []
+    _in_fence = False
+    for _line, _rgn in zip(lines, regions):
+        if _rgn == "content":
+            _ct_lines.append(_line)
+            _in_fence = False
+        elif not _in_fence:
+            _ct_lines.append("")
+            _in_fence = True
+    content_text = "\n".join(_ct_lines)
+
     _check_size(result, content, tokens, lines)
     _check_structure(result, content, lines, regions)
     _check_description_quality(result, content)
-    _check_token_waste(result, content, lines, regions)
-    _check_hedging_and_filler(result, content)
-    _check_hallucination_risks(result, content, lines, filepath, root)
+    _check_token_waste(result, content, lines, regions, content_text)
+    _check_hedging_and_filler(result, content_text)
+    _check_hallucination_risks(result, content, lines, filepath, root, content_text)
     _check_output_quality(result, content, lines, filepath, root)
-    _check_failure_mode_framing(result, content, lines)
-    _check_nested_references(result, content, lines)
-    _check_redundant_context(result, content, filepath)
-    _check_best_practices(result, content, lines)
+    _check_failure_mode_framing(result, content_text, lines)
+    _check_nested_references(result, content_text, lines)
+    _check_redundant_context(result, content_text, filepath)
+    _check_best_practices(result, content, lines, content_text)
     _check_broken_references(result, content, filepath, regions)
     _check_termination_conditions(result, content, lines, regions, filepath, root)
     _check_role_identity(result, content, lines, filepath)
@@ -534,7 +548,7 @@ def _analyze_file(filepath: Path, root: Path) -> ScanResult:
         ctx = CheckContext(
             result=result, content=content, lines=lines,
             regions=regions, filepath=filepath, root=root,
-            tokens=tokens,
+            tokens=tokens, content_text=content_text,
         )
         for rule in RULE_REGISTRY:
             try:
@@ -769,8 +783,10 @@ def _check_description_quality(result: ScanResult, content: str) -> None:
 def _check_token_waste(
     result: ScanResult, content: str, lines: list[str],
     regions: list[str] | None = None,
+    content_text: str | None = None,
 ) -> None:
     rgns = regions or ["content"] * len(lines)
+    ct = content_text if content_text is not None else content
     for i, line in enumerate(lines):
         if rgns[i] != "content":
             continue
@@ -796,7 +812,7 @@ def _check_token_waste(
         r"\byou should always\b",
     ]
     for pattern in filler:
-        matches = re.findall(pattern, content, re.IGNORECASE)
+        matches = re.findall(pattern, ct, re.IGNORECASE)
         if len(matches) >= 3:
             result.issues.append(Issue(
                 category="token-cost",
@@ -809,7 +825,8 @@ def _check_token_waste(
             ))
             break
 
-    duplicates = _find_duplicate_instructions(lines)
+    content_lines = [ln for ln, r in zip(lines, rgns) if r == "content"]
+    duplicates = _find_duplicate_instructions(content_lines)
     if duplicates:
         result.issues.append(Issue(
             category="token-cost",
@@ -841,7 +858,9 @@ def _find_duplicate_instructions(lines: list[str]) -> int:
 def _check_hallucination_risks(
     result: ScanResult, content: str, lines: list[str],
     filepath: Path | None = None, root: Path | None = None,
+    content_text: str | None = None,
 ) -> None:
+    ct = content_text if content_text is not None else content
     vague_patterns = [
         (r"\bdo (?:the |your )?best\b", "do your best"),
         (r"\btry to\b", "try to"),
@@ -851,7 +870,7 @@ def _check_hallucination_risks(
         (r"\buse your judgment\b", "use your judgment"),
     ]
     for pattern, label in vague_patterns:
-        if re.search(pattern, content, re.IGNORECASE):
+        if re.search(pattern, ct, re.IGNORECASE):
             result.issues.append(Issue(
                 category="hallucination-risk",
                 severity="suggestion",
@@ -862,6 +881,7 @@ def _check_hallucination_risks(
             ))
             break
 
+    # HRISK002 intentionally uses raw content: ``` in code fences = has output format
     has_output_format = bool(re.search(
         r"(output format|respond with|return.*json|format.*response"
         r"|structured output|```)",
@@ -951,6 +971,32 @@ def _check_failure_mode_framing(
             rule_id="FRAME002",
         ))
 
+    # FRAME003: bare directives without rationale
+    # Order matters: MUST NOT before MUST to avoid partial match
+    _directive_pat = re.compile(
+        r"\b(NEVER|MUST NOT|DO NOT|ALWAYS|MUST)\b", re.IGNORECASE,
+    )
+    # Heuristic rationale detection — may under-flag in some patterns
+    _rationale_pat = re.compile(
+        r"\b(because|since|so that|this ensures|to prevent"
+        r"|to avoid|otherwise|reason)\b|--|[:(]",
+        re.IGNORECASE,
+    )
+    bare_count = 0
+    for line in content.splitlines():
+        if _directive_pat.search(line) and not _rationale_pat.search(line):
+            bare_count += 1
+    if bare_count >= 5:
+        result.issues.append(Issue(
+            category="framing",
+            severity="info",
+            message=f"{bare_count} directives without rationale"
+            " (NEVER/MUST/ALWAYS without 'because'/'to prevent')",
+            fix="Add reasoning — 'NEVER do X because Y' is more"
+            " effective than bare 'NEVER do X'",
+            rule_id="FRAME003",
+        ))
+
 
 def _find_conflicting_instructions(content: str) -> str | None:
     pairs = [
@@ -993,7 +1039,9 @@ def _count_hedging(phrase: str, content: str) -> int:
     return count
 
 
-def _check_hedging_and_filler(result: ScanResult, content: str) -> None:
+def _check_hedging_and_filler(
+    result: ScanResult, content: str,
+) -> None:
     """Hedging and filler tokens waste context. Based on cclint's
     karpathy rule and AgentLinter's compressible-padding detection."""
     hedging = [
@@ -1141,7 +1189,8 @@ def _check_redundant_context(
 
 
 def _check_best_practices(
-    result: ScanResult, content: str, lines: list[str]
+    result: ScanResult, content: str, lines: list[str],
+    content_text: str | None = None,
 ) -> None:
     lower = content.lower()
 
@@ -1159,10 +1208,11 @@ def _check_best_practices(
                     rule_id="BPRAC001",
                 ))
 
-    if re.search(r"(step \d|phase \d|stage \d)", lower):
+    ct_lower = (content_text if content_text is not None else content).lower()
+    if re.search(r"(step \d|phase \d|stage \d)", ct_lower):
         has_error_handling = bool(re.search(
             r"(if.*fail|error|fallback|abort|stop|retry|escalat)",
-            lower,
+            ct_lower,
         ))
         if not has_error_handling:
             result.issues.append(Issue(
