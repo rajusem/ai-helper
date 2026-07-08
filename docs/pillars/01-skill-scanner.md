@@ -41,6 +41,7 @@ Static analysis of skill files — check for detectable patterns that correlate 
 | OQUAL | Output quality | OQUAL001 (no examples), OQUAL002 (no verification steps), OQUAL003 (no role statement) |
 | BPRAC | Best practice | BPRAC001 (no model in frontmatter), BPRAC002 (no error handling), BPRAC003 (no termination condition) |
 | STRUCT | Structure | STRUCT002 (encoding issues), STRUCT003 (no headers), STRUCT006 (broken file references) |
+| CROSS | Cross-file | CROSS001 (contradicting directives between root and skill/agent files) |
 
 ## Features
 

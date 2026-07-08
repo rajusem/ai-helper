@@ -15,6 +15,7 @@ from ai_helper.scan import (
     _build_baseline,
     _check_broken_references,
     _check_compound_instructions,
+    _check_cross_file_conflicts,
     _check_description_quality,
     _check_failure_mode_framing,
     _check_hallucination_risks,
@@ -31,6 +32,7 @@ from ai_helper.scan import (
     _find_duplicate_instructions,
     _has_skill_delegation,
     _is_git_url,
+    _is_root_directive_file,
     _is_root_reference_doc,
     _load_baseline,
     _load_config,
@@ -1967,3 +1969,152 @@ class TestFRAME004EmphasisOveruse:
         result = ScanResult(file="test.md")
         _check_failure_mode_framing(result, content, content.splitlines())
         assert not any(i.rule_id == "FRAME004" for i in result.issues)
+
+
+class TestIsRootDirectiveFile:
+    def test_root_claude_md(self, tmp_path):
+        assert _is_root_directive_file(tmp_path / "CLAUDE.md", tmp_path)
+
+    def test_root_agents_md(self, tmp_path):
+        assert _is_root_directive_file(tmp_path / "AGENTS.md", tmp_path)
+
+    def test_subdir_not_root(self, tmp_path):
+        assert not _is_root_directive_file(tmp_path / "agents" / "CLAUDE.md", tmp_path)
+
+    def test_root_skill_md_not_root_directive(self, tmp_path):
+        assert not _is_root_directive_file(tmp_path / "SKILL.md", tmp_path)
+
+
+class TestCrossFileConflicts:
+    def _setup(self, tmp_path, root_content, child_name, child_content):
+        root = tmp_path / "CLAUDE.md"
+        root.write_text(root_content)
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        child = skill_dir / child_name
+        child.write_text(child_content)
+        files = [root, child]
+        results = [ScanResult(file="CLAUDE.md"), ScanResult(file=f"skills/test-skill/{child_name}")]
+        return files, results
+
+    def test_skip_conflict(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests in CI.\n",
+            "SKILL.md", "Use skip-tests for faster local runs.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_no_conflict_no_issue(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests.\n",
+            "SKILL.md", "Run the full test suite.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_verbosity_conflict(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Always be concise in your output.\n",
+            "SKILL.md", "Provide detailed output for debugging.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_commit_conflict(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never commit directly to main.\n",
+            "SKILL.md", "Auto-commit changes after validation.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_file_modification_conflict(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Do not modify production config files.\n",
+            "SKILL.md", "Update production config with new values.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_review_bypass_conflict(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Always require review before merging.\n",
+            "SKILL.md", "Auto-approve low-risk changes.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_child_prohibition_suppressed(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests in CI.\n",
+            "SKILL.md", "Do not skip tests under any circumstances.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_avoid_prohibition_suppressed(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests in CI.\n",
+            "SKILL.md", "Avoid skipping tests in production.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_root_only_no_crash(self, tmp_path):
+        root = tmp_path / "CLAUDE.md"
+        root.write_text("Never skip tests.\n")
+        files = [root]
+        results = [ScanResult(file="CLAUDE.md")]
+        _check_cross_file_conflicts(files, results, tmp_path)
+
+    def test_child_only_no_crash(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "test"
+        skill_dir.mkdir(parents=True)
+        child = skill_dir / "SKILL.md"
+        child.write_text("Use skip-tests.\n")
+        files = [child]
+        results = [ScanResult(file="skills/test/SKILL.md")]
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[0].issues)
+
+    def test_attached_to_child(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests.\n",
+            "SKILL.md", "Use skip-tests for speed.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[0].issues)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_code_fence_not_detected(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests.\n",
+            "SKILL.md", "Example:\n```\nskip-tests flag\n```\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert not any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+    def test_symlink_dedup(self, tmp_path):
+        agents = tmp_path / "AGENTS.md"
+        agents.write_text("Never skip tests.\n")
+        claude = tmp_path / "CLAUDE.md"
+        claude.symlink_to("AGENTS.md")
+        skill_dir = tmp_path / "skills" / "test"
+        skill_dir.mkdir(parents=True)
+        child = skill_dir / "SKILL.md"
+        child.write_text("Use skip-tests.\n")
+        files = [claude, agents, child]
+        results = [
+            ScanResult(file="CLAUDE.md"),
+            ScanResult(file="AGENTS.md"),
+            ScanResult(file="skills/test/SKILL.md"),
+        ]
+        _check_cross_file_conflicts(files, results, tmp_path)
+        cross_issues = [i for i in results[2].issues if i.rule_id == "CROSS001"]
+        assert len(cross_issues) == 1
+
+    def test_multiple_conflicts(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Never skip tests.\nNever commit directly.\n",
+            "SKILL.md", "Use skip-tests.\nAuto-commit after build.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        cross_issues = [i for i in results[1].issues if i.rule_id == "CROSS001"]
+        assert len(cross_issues) == 2
+
+    def test_verbosity_reverse(self, tmp_path):
+        files, results = self._setup(tmp_path,
+            "Always be detailed and thorough in output.\n",
+            "SKILL.md", "Keep brief output for the report.\n")
+        _check_cross_file_conflicts(files, results, tmp_path)
+        assert any(i.rule_id == "CROSS001" for i in results[1].issues)

@@ -57,7 +57,7 @@ ai-helper scan --save-baseline          # Save current findings
 ai-helper scan --diff                   # Show only new issues since baseline
 ```
 
-33 rules across 7 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
+35+ rules across 8 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
 
 [Design doc](docs/pillars/01-skill-scanner.md)
 
@@ -182,7 +182,7 @@ uv run ruff check src/
 | 4. Smart Defaults | RTK integration, model recommendations, context calculator |
 | 5. Developer Setup | `doctor` working, `init` planned |
 
-264 tests passing. Works with Claude Code, OpenCode, and Cursor.
+283 tests passing. Works with Claude Code, OpenCode, and Cursor.
 
 ## License
 

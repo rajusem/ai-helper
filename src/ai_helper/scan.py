@@ -61,6 +61,126 @@ SKILL_DIRS = [
 ]
 
 
+def _is_root_directive_file(filepath: Path, root: Path) -> bool:
+    """True if file is a root-level governance doc (not root SKILL.md)."""
+    return (
+        filepath.parent == root
+        and filepath.name.lower() in {"claude.md", "agents.md", ".cursorrules"}
+    )
+
+
+def _read_content_text(filepath: Path) -> str:
+    """Read file and return code-fence-filtered content text."""
+    try:
+        content = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = content.splitlines()
+    regions = _parse_content_regions(lines)
+    ct_lines: list[str] = []
+    in_fence = False
+    for line, rgn in zip(lines, regions):
+        if rgn == "content":
+            ct_lines.append(line)
+            in_fence = False
+        elif not in_fence:
+            ct_lines.append("")
+            in_fence = True
+    return "\n".join(ct_lines)
+
+
+_CROSS_CHILD_PROHIB = re.compile(
+    r"\b(do not|don'?t|never|must not|should not|avoid)\b", re.I,
+)
+
+_CROSS_FILE_PAIRS = [
+    # (root_pattern, child_pattern, description)
+    (re.compile(
+        r"\b(never|must not|do not|don'?t)\b.{0,30}\b(skip|bypass|omit)\b"
+        r".{0,20}\btest", re.I),
+     re.compile(r"skip[- ]?test|without\s+test|tests?\s+optional", re.I),
+     "test-skipping"),
+    (re.compile(r"\b(always|must)\b.{0,30}\b(concise|brief|short|terse)\b", re.I),
+     re.compile(
+        r"\b(verbose|detailed|thorough|exhaustive)\b"
+        r".{0,30}\b(output|response|explanation|report)\b", re.I),
+     "verbosity (root requires concise, child requests verbose)"),
+    (re.compile(
+        r"\b(always|must)\b.{0,30}\b(verbose|detailed|thorough|exhaustive)\b", re.I),
+     re.compile(
+        r"\b(concise|brief|short|terse)\b"
+        r".{0,30}\b(output|response|explanation|report)\b", re.I),
+     "verbosity (root requires verbose, child requests concise)"),
+    (re.compile(
+        r"\b(never|must not|do not|don'?t)\b.{0,30}\b(commit|push|deploy)\b", re.I),
+     re.compile(
+        r"\b(auto[- ]?commit|auto[- ]?push|auto[- ]?deploy"
+        r"|commit\s+directly|push\s+directly|force\s+push)\b", re.I),
+     "commit/push restriction"),
+    (re.compile(
+        r"\b(never|must not|do not|don'?t)\b.{0,30}"
+        r"\b(modify|edit|overwrite)\b.{0,30}"
+        r"\b(production|config|\.env|settings)\b", re.I),
+     re.compile(
+        r"\b(update|modify|edit|write\s+to|overwrite)\b"
+        r".{0,30}\b(production|config|\.env|settings)\b", re.I),
+     "file modification restriction"),
+    (re.compile(
+        r"\b(always|must|require)\b.{0,30}\b(review|approval|sign-?off)\b", re.I),
+     re.compile(
+        r"\b(without\s+review|skip\s+review|no\s+review"
+        r"|bypass\s+approval|auto[- ]?approv)", re.I),
+     "review/approval bypass"),
+]
+
+
+def _check_cross_file_conflicts(
+    files: list[Path], results: list[ScanResult], root: Path,
+) -> None:
+    """Detect contradictions between root governance files and child skills."""
+    # Classify and deduplicate root files
+    root_contents: dict[Path, str] = {}
+    for filepath in files:
+        if _is_root_directive_file(filepath, root):
+            resolved = filepath.resolve()
+            if resolved not in root_contents:
+                root_contents[resolved] = _read_content_text(filepath)
+
+    if not root_contents:
+        return
+
+    for filepath, result in zip(files, results):
+        if _is_root_directive_file(filepath, root):
+            continue
+        child_ct = _read_content_text(filepath)
+        if not child_ct:
+            continue
+
+        for _root_resolved, root_ct in root_contents.items():
+            for root_pat, child_pat, desc in _CROSS_FILE_PAIRS:
+                if not root_pat.search(root_ct):
+                    continue
+                for line in child_ct.splitlines():
+                    if child_pat.search(line) and not _CROSS_CHILD_PROHIB.search(line):
+                        root_name = next(
+                            (str(f.relative_to(root))
+                             for f in files
+                             if f.resolve() == _root_resolved),
+                            "root",
+                        )
+                        result.issues.append(Issue(
+                            category="cross-file",
+                            severity="warning",
+                            message=f"Conflicts with {root_name}: {desc}",
+                            fix="Align with root governance or add"
+                            " explicit override justification."
+                            " Contradictions cause unpredictable"
+                            " agent behavior",
+                            rule_id="CROSS001",
+                        ))
+                        break
+
+
 def _is_root_reference_doc(filepath: Path, root: Path) -> bool:
     """True if filepath is a root-level reference doc (not an agent prompt)."""
     return (
@@ -398,6 +518,9 @@ def _run_scan_on_dir(
     for filepath in files:
         result = _analyze_file(filepath, target)
         results.append(result)
+
+    # Cross-file conflict detection (before disable/baseline pipeline)
+    _check_cross_file_conflicts(files, results, target)
 
     # Order: disable -> baseline -> count severities -> filter -> score
     if disabled_rules:
