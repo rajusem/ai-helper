@@ -39,7 +39,7 @@ Static analysis of skill files — check for detectable patterns that correlate 
 | HRISK | Hallucination risk | HRISK001 (vague instruction), HRISK002 (no output format), HRISK004 (compound instructions), HRISK005 (untrusted content handling) |
 | FRAME | Framing | FRAME001 (heavy non-safety prohibitions), FRAME003 (bare directives), FRAME004 (emphasis overuse) |
 | OQUAL | Output quality | OQUAL001 (no examples), OQUAL002 (no verification steps), OQUAL003 (no role statement) |
-| BPRAC | Best practice | BPRAC001 (no model in frontmatter), BPRAC002 (no error handling), BPRAC003 (no termination condition) |
+| BPRAC | Best practice | BPRAC001 (no model in frontmatter), BPRAC002 (no error handling), BPRAC003 (no termination condition), BPRAC004 (haiku overload), BPRAC005 (opus underutilization) |
 | STRUCT | Structure | STRUCT002 (encoding issues), STRUCT003 (no headers), STRUCT006 (broken file references) |
 | CROSS | Cross-file | CROSS001 (contradicting directives between root and skill/agent files) |
 
@@ -63,4 +63,3 @@ The scanner automatically finds:
 ## Future Checks
 
 - Cross-tool compatibility (patterns that work in Claude Code but not Cursor)
-- Model-appropriate complexity (Opus specified for a Sonnet-level task?)

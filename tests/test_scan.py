@@ -13,6 +13,7 @@ from ai_helper.scan import (
     _analyze_file,
     _baseline_key,
     _build_baseline,
+    _check_best_practices,
     _check_broken_references,
     _check_compound_instructions,
     _check_cross_file_conflicts,
@@ -2118,3 +2119,99 @@ class TestCrossFileConflicts:
             "SKILL.md", "Keep brief output for the report.\n")
         _check_cross_file_conflicts(files, results, tmp_path)
         assert any(i.rule_id == "CROSS001" for i in results[1].issues)
+
+
+class TestBPRAC004ModelComplexity:
+    def _make_content(self, model, tokens_target, lines_target):
+        fm = f"---\nmodel: {model}\n---\n"
+        body_lines = [f"Instruction line {i} with some words to fill tokens."
+                      for i in range(max(lines_target - 3, 1))]
+        body = "\n".join(body_lines)
+        while len(fm + body) // 4 < tokens_target and len(body_lines) < 2000:
+            body_lines.append("Another instruction line with padding words here.")
+            body = "\n".join(body_lines)
+        return fm + body
+
+    def test_haiku_high_tokens_flagged(self):
+        content = self._make_content("haiku", 2000, 100)
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert any(i.rule_id == "BPRAC004" for i in result.issues)
+
+    def test_haiku_high_lines_flagged(self):
+        content = self._make_content("haiku", 800, 300)
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert any(i.rule_id == "BPRAC004" for i in result.issues)
+
+    def test_haiku_normal_no_flag(self):
+        content = "---\nmodel: haiku\n---\n" + "Short instruction.\n" * 20
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id == "BPRAC004" for i in result.issues)
+
+    def test_opus_simple_flagged(self):
+        content = "---\nmodel: opus\n---\nReview code for issues.\n" * 3
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert any(i.rule_id == "BPRAC005" for i in result.issues)
+
+    def test_opus_complex_no_flag(self):
+        content = self._make_content("opus", 2000, 200)
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id == "BPRAC005" for i in result.issues)
+
+    def test_opus_short_but_dense_no_flag(self):
+        content = "---\nmodel: opus\n---\n" + ("x" * 2000) + "\n"
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id == "BPRAC005" for i in result.issues)
+
+    def test_sonnet_no_check(self):
+        content = self._make_content("sonnet", 2000, 200)
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id in ("BPRAC004", "BPRAC005") for i in result.issues)
+
+    def test_no_model_no_check(self):
+        content = "# No frontmatter\nJust content.\n"
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id in ("BPRAC004", "BPRAC005") for i in result.issues)
+
+    def test_provider_prefix_normalized(self):
+        content = self._make_content(
+            "google-vertex-anthropic/claude-haiku-4-5@default", 2000, 100)
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert any(i.rule_id == "BPRAC004" for i in result.issues)
+
+    def test_unknown_model_no_check(self):
+        content = "---\nmodel: my-local-llm\n---\n" + "x\n" * 300
+        result = ScanResult(file="test.md", token_estimate=len(content) // 4)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id in ("BPRAC004", "BPRAC005") for i in result.issues)
+
+    def test_haiku_at_threshold_no_flag(self):
+        content = "---\nmodel: haiku\n---\n" + "word " * 1490
+        tok = len(content) // 4
+        result = ScanResult(file="test.md", token_estimate=min(tok, 1500))
+        _check_best_practices(result, content, content.splitlines())
+        if len(content.splitlines()) <= 250:
+            assert not any(i.rule_id == "BPRAC004" for i in result.issues)
+
+    def test_opus_at_threshold_no_flag(self):
+        content = "---\nmodel: opus\n---\n" + "Line.\n" * 47
+        result = ScanResult(file="test.md", token_estimate=500)
+        _check_best_practices(result, content, content.splitlines())
+        assert not any(i.rule_id == "BPRAC005" for i in result.issues)
+
+    def test_e2e_via_analyze_file(self, tmp_path):
+        skill_dir = tmp_path / ".claude" / "agents"
+        skill_dir.mkdir(parents=True)
+        f = skill_dir / "test-agent.md"
+        content = self._make_content("haiku", 2000, 100)
+        f.write_text(content)
+        result = _analyze_file(f, tmp_path)
+        assert any(i.rule_id == "BPRAC004" for i in result.issues)

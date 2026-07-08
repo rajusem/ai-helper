@@ -1416,6 +1416,28 @@ def _check_redundant_context(
         ))
 
 
+def _extract_model_tier(content: str) -> str | None:
+    """Extract model tier from frontmatter. Returns opus/sonnet/haiku/fable or None."""
+    if not content.startswith("---"):
+        return None
+    fm_end = content.find("---", 3)
+    if fm_end <= 0:
+        return None
+    match = re.search(r"^model:\s*(\S+)", content[3:fm_end], re.MULTILINE)
+    if not match:
+        return None
+    name = match.group(1).split("/")[-1].split("@")[0].lower()
+    if "opus" in name:
+        return "opus"
+    if "sonnet" in name:
+        return "sonnet"
+    if "haiku" in name:
+        return "haiku"
+    if "fable" in name:
+        return "fable"
+    return None
+
+
 def _check_best_practices(
     result: ScanResult, content: str, lines: list[str],
     content_text: str | None = None,
@@ -1451,6 +1473,34 @@ def _check_best_practices(
                 " when a step fails? Without this, agents retry"
                 " endlessly and waste tokens",
                 rule_id="BPRAC002",
+            ))
+
+    model_tier = _extract_model_tier(content)
+    if model_tier:
+        tok = result.token_estimate
+        line_count = len(lines)
+        if model_tier == "haiku" and (tok > 1500 or line_count > 250):
+            result.issues.append(Issue(
+                category="best-practice",
+                severity="suggestion",
+                message=f"Haiku specified but skill has"
+                f" {tok} tokens / {line_count} lines"
+                " — may exceed Haiku's capability",
+                fix="Consider sonnet for complex skills."
+                " Smaller models struggle with long"
+                " instructions and multi-step reasoning",
+                rule_id="BPRAC004",
+            ))
+        elif model_tier == "opus" and tok < 500 and line_count < 50:
+            result.issues.append(Issue(
+                category="best-practice",
+                severity="info",
+                message=f"Opus specified but skill is only"
+                f" {tok} tokens / {line_count} lines"
+                " — sonnet or haiku would suffice",
+                fix="Consider sonnet or haiku for simple"
+                " tasks — saves 3-5x on inference cost",
+                rule_id="BPRAC005",
             ))
 
 
