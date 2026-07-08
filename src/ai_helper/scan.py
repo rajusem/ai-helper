@@ -23,6 +23,24 @@ CATEGORY_PENALTY_CAP = 15
 
 SEVERITY_ORDER = {"warning": 0, "suggestion": 1, "info": 2}
 
+# Ambiguous words (key, main, root, branch) intentionally trade false negatives
+# for zero false positives — a non-safety prohibition misclassified as safety
+# suppresses the finding (safer direction) rather than creating a spurious warning.
+_SAFETY_KEYWORDS = re.compile(
+    r"\b(commit|push|force|delete|secrets?|credentials?"
+    r"|keys?|passwords?|production|deploy|rm\b|remove"
+    r"|drop|reset|checkout|overwrite|merge|rebase"
+    r"|token|auth|hooks?|branch|branches|main|master"
+    r"|protected|inject|eval|exec|sudo|root|chmod)\b", re.I,
+)
+_PROHIBITION_PAT = re.compile(
+    r"\b(do not|don'?t|never|must not|avoid|forbidden)\b", re.I,
+)
+_EMPHASIS_PAT = re.compile(
+    r"\b(CRITICAL|URGENT|IMPORTANT|WARNING|REQUIRED|ESSENTIAL"
+    r"|MANDATORY|CRUCIAL)\s*[:\-!](?!\w)", re.I,
+)
+
 SKILL_PATTERNS = [
     "SKILL.md",
     "CLAUDE.md",
@@ -1000,23 +1018,35 @@ def _check_failure_mode_framing(
 ) -> None:
     """Prohibitions work for rule-violations but backfire for
     output-shape issues. Check if the framing matches the failure type."""
-    prohibitions = re.findall(
-        r"(do not|don'?t|never|must not|avoid|forbidden)", content, re.I
-    )
     positives = re.findall(
         r"(instead|prefer|use .+ rather|always .+ when|the correct)",
         content, re.I,
     )
 
-    if len(prohibitions) > 6 and len(positives) < 2:
+    safety_count = 0
+    nonsafety_count = 0
+    for line in content.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        if _PROHIBITION_PAT.search(line):
+            if _SAFETY_KEYWORDS.search(line):
+                safety_count += 1
+            else:
+                nonsafety_count += 1
+
+    total = safety_count + nonsafety_count
+    if total > 6 and nonsafety_count > 4 and len(positives) < 2:
         result.issues.append(Issue(
             category="framing",
             severity="suggestion",
-            message=f"Heavy on prohibitions ({len(prohibitions)})"
+            message=f"Heavy on prohibitions ({total}:"
+            f" {nonsafety_count} non-safety,"
+            f" {safety_count} safety)"
             f" with few positive alternatives ({len(positives)})",
-            fix="Balance 'do NOT X' with 'instead do Y' —"
-            " agents need to know what TO do, not just what to avoid."
-            " Prohibitions alone can cause over-cautious behavior",
+            fix=f"Safety prohibitions (commit/push/delete/secrets)"
+            f" are fine as-is. For the {nonsafety_count} non-safety"
+            " prohibitions, add positive alternatives —"
+            " 'instead of X, do Y'",
             rule_id="FRAME001",
         ))
 
@@ -1055,6 +1085,21 @@ def _check_failure_mode_framing(
             fix="Add reasoning — 'NEVER do X because Y' is more"
             " effective than bare 'NEVER do X'",
             rule_id="FRAME003",
+        ))
+
+    # FRAME004: emphasis marker overuse
+    emphasis_matches = _EMPHASIS_PAT.findall(content)
+    if len(emphasis_matches) >= 4:
+        result.issues.append(Issue(
+            category="framing",
+            severity="info",
+            message=f"{len(emphasis_matches)} emphasis markers"
+            " (CRITICAL/IMPORTANT/WARNING/...) —"
+            " when everything is critical, nothing is",
+            fix="Reserve CRITICAL/IMPORTANT for 1-2 truly critical"
+            " rules. Overuse causes models to overtrigger on"
+            " emphasized instructions and ignore non-emphasized ones",
+            rule_id="FRAME004",
         ))
 
 

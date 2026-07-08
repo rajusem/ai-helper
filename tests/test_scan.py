@@ -1840,3 +1840,130 @@ class TestHRISK005UntrustedContent:
         result = ScanResult(file="test.md")
         _check_hallucination_risks(result, content, lines, content_text=content_text)
         assert not any(i.rule_id == "HRISK005" for i in result.issues)
+
+
+class TestFRAME001SafetyClassification:
+    def _make_safety_lines(self, n):
+        templates = [
+            "NEVER force push to main",
+            "Do not commit secrets to version control",
+            "NEVER delete production branches",
+            "Must not push credentials to git",
+            "Avoid deploying untested code",
+            "Don't overwrite merge commits",
+            "NEVER reset --hard shared branches",
+            "Do not remove authentication tokens",
+        ]
+        return "\n".join(templates[:n])
+
+    def _make_nonsafety_lines(self, n):
+        templates = [
+            "Don't use semicolons in JavaScript",
+            "Avoid passive voice in documentation",
+            "Never start sentences with 'I'",
+            "Must not use abbreviations in comments",
+            "Do not use tabs for indentation",
+            "Avoid inline styles in components",
+            "Don't add trailing commas",
+            "Never use single-letter variables",
+        ]
+        return "\n".join(templates[:n])
+
+    def test_safety_dominant_no_fire(self):
+        content = self._make_safety_lines(8) + "\n" + self._make_nonsafety_lines(2)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_nonsafety_dominant_fires(self):
+        content = self._make_safety_lines(2) + "\n" + self._make_nonsafety_lines(6)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_mixed_with_positives_no_fire(self):
+        content = (
+            self._make_safety_lines(3) + "\n"
+            + self._make_nonsafety_lines(5) + "\n"
+            + "Instead use spaces for indentation.\n"
+            + "Prefer const over let.\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_below_threshold_no_fire(self):
+        content = self._make_safety_lines(3) + "\n" + self._make_nonsafety_lines(2)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_all_safety_no_fire(self):
+        content = self._make_safety_lines(8)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+    def test_message_shows_breakdown(self):
+        content = self._make_safety_lines(2) + "\n" + self._make_nonsafety_lines(6)
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        issues = [i for i in result.issues if i.rule_id == "FRAME001"]
+        assert issues
+        assert "non-safety" in issues[0].message
+        assert "safety" in issues[0].message
+
+    def test_regression_header_with_prohibition_skipped(self):
+        content = (
+            "## Hard Limits (NEVER Do These)\n"
+            + self._make_safety_lines(8) + "\n"
+            + self._make_nonsafety_lines(2)
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME001" for i in result.issues)
+
+
+class TestFRAME004EmphasisOveruse:
+    def test_four_markers_fires(self):
+        content = (
+            "CRITICAL: Never skip tests\n"
+            "IMPORTANT: Always validate input\n"
+            "WARNING: Check for null pointers\n"
+            "URGENT: Deploy before Friday\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert any(i.rule_id == "FRAME004" for i in result.issues)
+
+    def test_three_markers_no_fire(self):
+        content = (
+            "CRITICAL: Never skip tests\n"
+            "IMPORTANT: Always validate\n"
+            "WARNING: Check nulls\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME004" for i in result.issues)
+
+    def test_compound_word_not_counted(self):
+        content = (
+            "CRITICAL-path analysis required\n"
+            "IMPORTANT-looking feature request\n"
+            "REQUIRED-field validation needed\n"
+            "MANDATORY-review process applied\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME004" for i in result.issues)
+
+    def test_emphasis_in_prose_not_counted(self):
+        content = (
+            "This is critical for safety.\n"
+            "The important thing is to test.\n"
+            "A warning sign appeared.\n"
+            "The required changes are minimal.\n"
+        )
+        result = ScanResult(file="test.md")
+        _check_failure_mode_framing(result, content, content.splitlines())
+        assert not any(i.rule_id == "FRAME004" for i in result.issues)
