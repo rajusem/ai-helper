@@ -52,6 +52,8 @@ Static analysis of skill files — check for detectable patterns that correlate 
 - **URL scanning** — scan public GitHub repos by HTTPS URL (shallow clone, auto cleanup)
 - **Content region parsing** — distinguishes frontmatter, code fences, and content to avoid false positives in code blocks
 - **False-positive mitigations** — runtime-created file detection, target-repo reference detection, word-boundary hedging matching, delegation-aware checks, linear-step vs loop distinction
+- **Inline suppression** — `<!-- ai-helper-scan: disable RULE_ID -->` in HTML comments (file-level or same-line scope)
+- **File-size guard** — files >10MB skipped with STRUCT007 warning
 
 ## Files Discovered
 

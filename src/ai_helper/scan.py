@@ -40,6 +40,10 @@ _EMPHASIS_PAT = re.compile(
     r"\b(CRITICAL|URGENT|IMPORTANT|WARNING|REQUIRED|ESSENTIAL"
     r"|MANDATORY|CRUCIAL)\s*[:\-!](?!\w)", re.I,
 )
+_SUPPRESS_PAT = re.compile(
+    r"<!--\s*ai-helper-scan:\s*disable"
+    r"\s+((?:[A-Z][A-Z0-9_]+)(?:\s*,?\s*[A-Z][A-Z0-9_]+)*)\s*-->",
+)
 
 SKILL_PATTERNS = [
     "SKILL.md",
@@ -59,6 +63,33 @@ SKILL_DIRS = [
     ".claude/skills",
     "skills",
 ]
+
+
+def _parse_inline_suppressions(
+    lines: list[str], regions: list[str],
+) -> tuple[set[str], dict[int, set[str]]]:
+    """Parse inline suppression comments (skipping code fences).
+
+    Returns (file_level_rules, {line_number: rules_to_suppress}).
+    """
+    file_rules: set[str] = set()
+    line_rules: dict[int, set[str]] = {}
+    found_content = False
+    for i, (line, rgn) in enumerate(zip(lines, regions)):
+        if rgn != "content":
+            continue
+        if not found_content and not line.strip():
+            continue
+        m = _SUPPRESS_PAT.search(line)
+        if m:
+            rules = {r.strip() for r in re.split(r"[\s,]+", m.group(1)) if r.strip()}
+            if not found_content:
+                file_rules.update(rules)
+            else:
+                line_rules[i + 1] = rules
+        elif line.strip():
+            found_content = True
+    return file_rules, line_rules
 
 
 def _is_root_directive_file(filepath: Path, root: Path) -> bool:
@@ -522,6 +553,36 @@ def _run_scan_on_dir(
     # Cross-file conflict detection (before disable/baseline pipeline)
     _check_cross_file_conflicts(files, results, target)
 
+    # Inline suppression (before disable/baseline pipeline)
+    inline_suppressed = 0
+    for filepath, result in zip(files, results):
+        if any(i.rule_id == "STRUCT007" for i in result.issues):
+            continue
+        try:
+            raw = filepath.read_text(errors="replace")
+        except OSError:
+            continue
+        raw_lines = raw.splitlines()
+        rgns = _parse_content_regions(raw_lines)
+        file_rules, line_rules = _parse_inline_suppressions(raw_lines, rgns)
+        before = len(result.issues)
+        if file_rules:
+            result.issues = [i for i in result.issues if i.rule_id not in file_rules]
+        if line_rules:
+            result.issues = [
+                i for i in result.issues
+                if not (i.line and i.line in line_rules
+                        and i.rule_id in line_rules[i.line])
+            ]
+        inline_suppressed += before - len(result.issues)
+
+    if inline_suppressed:
+        console.print(
+            f"  Inline: {inline_suppressed} finding"
+            f"{'s' if inline_suppressed != 1 else ''}"
+            " suppressed by comments"
+        )
+
     # Order: disable -> baseline -> count severities -> filter -> score
     if disabled_rules:
         normed = {r.strip().upper() for r in disabled_rules}
@@ -625,6 +686,22 @@ def _estimate_tokens(text: str) -> int:
 
 def _analyze_file(filepath: Path, root: Path) -> ScanResult:
     rel_path = str(filepath.relative_to(root))
+
+    try:
+        file_size = filepath.stat().st_size
+        if file_size > 10_000_000:
+            result = ScanResult(file=rel_path)
+            result.issues.append(Issue(
+                category="structure", severity="warning",
+                message=f"File is {file_size // 1_048_576} MB"
+                " — too large to scan",
+                fix="Skill files should be under 10 MB",
+                rule_id="STRUCT007",
+            ))
+            return result
+    except OSError:
+        pass
+
     encoding_issue = False
     try:
         content = filepath.read_text(encoding="utf-8")

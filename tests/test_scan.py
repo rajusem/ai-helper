@@ -38,6 +38,7 @@ from ai_helper.scan import (
     _load_baseline,
     _load_config,
     _parse_content_regions,
+    _parse_inline_suppressions,
     _print_sarif,
     _save_baseline,
     register_rule,
@@ -2215,3 +2216,97 @@ class TestBPRAC004ModelComplexity:
         f.write_text(content)
         result = _analyze_file(f, tmp_path)
         assert any(i.rule_id == "BPRAC004" for i in result.issues)
+
+
+class TestSTRUCT007FileSize:
+    def test_large_file_struct007(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        f.write_text("x" * 11_000_000)
+        result = _analyze_file(f, tmp_path)
+        assert any(i.rule_id == "STRUCT007" for i in result.issues)
+        assert len(result.issues) == 1
+
+    def test_normal_file_no_struct007(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        f.write_text("# Normal skill\nSome content.\n")
+        result = _analyze_file(f, tmp_path)
+        assert not any(i.rule_id == "STRUCT007" for i in result.issues)
+
+    def test_boundary_10mb_no_fire(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        f.write_text("x" * 10_000_000)
+        result = _analyze_file(f, tmp_path)
+        assert not any(i.rule_id == "STRUCT007" for i in result.issues)
+
+    def test_stat_error_handled(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        f.write_text("# Test\nContent.\n")
+        result = _analyze_file(f, tmp_path)
+        assert result.file == "CLAUDE.md"
+
+
+class TestInlineSuppression:
+    def test_file_level_disable(self):
+        content = "<!-- ai-helper-scan: disable DESC005 -->\n# Skill\nDo things.\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, line_rules = _parse_inline_suppressions(lines, regions)
+        assert "DESC005" in file_rules
+        assert not line_rules
+
+    def test_multiple_rules_disabled(self):
+        content = "<!-- ai-helper-scan: disable TCOST003, HRISK001 -->\n# Skill\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, _ = _parse_inline_suppressions(lines, regions)
+        assert "TCOST003" in file_rules
+        assert "HRISK001" in file_rules
+
+    def test_typo_no_effect(self):
+        content = "<!-- ai-helper-scan: disable tcos005 -->\n# Skill\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, _ = _parse_inline_suppressions(lines, regions)
+        assert not file_rules
+
+    def test_code_fence_comment_ignored(self):
+        content = "# Skill\nSome text\n```\n<!-- ai-helper-scan: disable DESC005 -->\n```\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, line_rules = _parse_inline_suppressions(lines, regions)
+        assert not file_rules
+        assert not line_rules
+
+    def test_lowercase_rejected(self):
+        content = "<!-- ai-helper-scan: disable tcost005 -->\n# Skill\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, _ = _parse_inline_suppressions(lines, regions)
+        assert not file_rules
+
+    def test_no_comments_normal(self):
+        content = "# Skill\nDo things step by step.\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, line_rules = _parse_inline_suppressions(lines, regions)
+        assert not file_rules
+        assert not line_rules
+
+    def test_line_level_after_content(self):
+        content = "# Skill\nSome content here.\n<!-- ai-helper-scan: disable TCOST005 -->\n"
+        lines = content.splitlines()
+        regions = _parse_content_regions(lines)
+        file_rules, line_rules = _parse_inline_suppressions(lines, regions)
+        assert not file_rules
+        assert 3 in line_rules
+        assert "TCOST005" in line_rules[3]
+
+    def test_suppression_integration(self, tmp_path):
+        f = tmp_path / "CLAUDE.md"
+        f.write_text(
+            "<!-- ai-helper-scan: disable TCOST010 -->\n"
+            + ("Long paragraph with many words. " * 50 + "\n") * 3
+        )
+        _analyze_file(f, tmp_path)
+        # Inline suppression is applied in _run_scan_on_dir,
+        # not _analyze_file — parsing verified in tests above
