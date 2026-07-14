@@ -10,7 +10,7 @@ A few things that aren't available built-in:
 
 - **Cross-tool view** — see Claude Code, OpenCode, and Cursor stats side by side (each tool only shows its own)
 - **Cost in dollars** — built-in stats show tokens; ai-helper estimates cost per session and model tier
-- **Skill file scanner** — no built-in linter for SKILL.md, CLAUDE.md, .cursorrules files
+- **Skill linter** — graduated to standalone [skill-lint](https://github.com/rajusem/skill-lint) (`pip install ai-skill-lint`)
 - **Cross-tool config sync** — set models across all tools with one command instead of editing 3 config files
 
 ## Quick Start
@@ -42,26 +42,7 @@ ai-helper config set --model sonnet --small-model haiku
 
 ## Pillars
 
-### 1. Skill Scanner (`ai-helper scan`)
-
-Analyze AI skill files (SKILL.md, CLAUDE.md, agent.md, .cursorrules) for common issues.
-
-```bash
-ai-helper scan                          # Scan current project
-ai-helper scan /path/to/project         # Scan a local directory
-ai-helper scan https://github.com/org/repo  # Scan a GitHub repo by URL
-ai-helper scan . -v                     # Verbose — show all issues per file
-ai-helper scan --format sarif           # SARIF output for CI
-ai-helper scan --fail-on warning        # Exit 1 on warnings (CI gate)
-ai-helper scan --save-baseline          # Save current findings
-ai-helper scan --diff                   # Show only new issues since baseline
-```
-
-35+ rules across 8 categories: token cost, description quality, hallucination risk, framing, output quality, structure, best practices. Each file scored 0-100.
-
-[Design doc](docs/pillars/01-skill-scanner.md)
-
-### 2. Usage Insights (`ai-helper stats`)
+### 1. Usage Insights (`ai-helper stats`)
 
 Cross-tool usage stats.
 
@@ -99,7 +80,7 @@ ai-helper stats context
 
 [Design doc](docs/pillars/02-usage-insights.md)
 
-### 3. Config Manager (`ai-helper config`)
+### 2. Config Manager (`ai-helper config`)
 
 Set models across Claude Code, OpenCode, and Cursor from one command.
 
@@ -113,7 +94,7 @@ Model aliases (`opus`, `sonnet`, `haiku`) resolve to full IDs. Validates model n
 
 [Design doc](docs/pillars/03-config-manager.md)
 
-### 4. Smart Defaults (`ai-helper optimize`)
+### 3. Smart Defaults (`ai-helper optimize`)
 
 Convenience wrappers for RTK setup and reporting across tools.
 
@@ -126,7 +107,7 @@ ai-helper optimize discover        # Missed opportunities (wraps rtk discover)
 
 [Design doc](docs/pillars/04-smart-defaults.md)
 
-### 5. Developer Setup (`ai-helper doctor`)
+### 4. Developer Setup (`ai-helper doctor`)
 
 See all your AI tools in one place.
 
@@ -176,13 +157,13 @@ uv run ruff check src/
 
 | Pillar | Status |
 |--------|--------|
-| 1. Skill Scanner | 35+ rules, SARIF, baseline/diff, config file, custom rules, CI exit codes |
-| 2. Usage Insights | Cross-tool stats (Claude Code + OpenCode + Cursor), cost estimation, model recommendations, what-if savings, cross-tool comparison |
-| 3. Config Manager | Cross-tool model config with aliases and validation |
-| 4. Smart Defaults | RTK integration, model recommendations, context calculator |
-| 5. Developer Setup | `doctor` working, `init` planned |
+| 1. Usage Insights | Cross-tool stats (Claude Code + OpenCode + Cursor), cost estimation, model recommendations, what-if savings, cross-tool comparison |
+| 2. Config Manager | Cross-tool model config with aliases and validation |
+| 3. Smart Defaults | RTK integration, model recommendations, context calculator |
+| 4. Developer Setup | `doctor` working, `init` planned |
+| Skill Scanner | Graduated to standalone [skill-lint](https://github.com/rajusem/skill-lint) (`pip install ai-skill-lint`) |
 
-308 tests passing. Works with Claude Code, OpenCode, and Cursor.
+64 tests passing. Works with Claude Code, OpenCode, and Cursor.
 
 ## License
 

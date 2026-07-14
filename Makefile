@@ -1,4 +1,4 @@
-.PHONY: install install-global dev test lint scan doctor stats help
+.PHONY: install install-global dev test lint doctor stats help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -20,12 +20,6 @@ lint: ## Run linter
 
 lint-fix: ## Auto-fix lint issues
 	uv run ruff check --fix src/ tests/
-
-scan: ## Scan this project's skill files
-	uv run ai-helper scan .
-
-scan-report: ## Scan with aggregate report
-	uv run ai-helper scan . --report
 
 doctor: ## Health check across AI tools
 	uv run ai-helper doctor

@@ -45,20 +45,6 @@ ai-helper config set --model sonnet --small-model haiku
                       opencode.json
 ```
 
-### Skill File Scanning
-
-```
-ai-helper scan [path|URL]
-      ↓
-  Discover files (CLAUDE.md, AGENTS.md, .cursorrules, agents/*.md, skills/*/SKILL.md)
-      ↓
-  Analyze each file (33 rules across 7 categories)
-      ↓
-  Score 0-100 with actionable fix suggestions
-      ↓
-  Output: table (human), JSON (programmatic), SARIF (CI/CD)
-```
-
 ## Tool Integration Points
 
 ### Claude Code
@@ -86,7 +72,6 @@ ai-helper scan [path|URL]
 ai-helper/
 ├── src/ai_helper/
 │   ├── cli.py              # CLI entry point (Click commands and groups)
-│   ├── scan.py             # Skill file scanner (33 rules, SARIF, baseline/diff)
 │   ├── stats.py            # Usage analytics (JSONL + SQLite readers, cost estimation)
 │   ├── config.py           # Config manager (read/write across tools, validation)
 │   ├── optimize.py         # RTK/Ponytail/Headroom integration
@@ -97,12 +82,12 @@ ai-helper/
 │       ├── claude_code.py  # Claude Code detection
 │       ├── opencode.py     # OpenCode detection
 │       └── cursor.py       # Cursor detection
-├── tests/                  # 232 tests (pytest)
+├── tests/                  # 64 tests (pytest)
 ├── docs/                   # Design docs (public)
 ├── local-docs/             # Research & reference (gitignored)
 ├── .githooks/              # Pre-commit secret detection
 ├── CONTRIBUTING.md         # Contributor guide
 ├── AGENTS.md               # Project context (CLAUDE.md symlinks here)
 ├── pyproject.toml          # Python 3.11+, deps: click, pyyaml, rich
-└── Makefile                # install, test, lint, scan, doctor, stats targets
+└── Makefile                # install, test, lint, doctor, stats targets
 ```

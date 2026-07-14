@@ -13,97 +13,22 @@ def main():
     """ai-helper: work smarter with AI coding tools."""
 
 
-_VALID_SEVERITIES = {"warning", "suggestion", "info"}
-
-
-def _validate_severity(ctx, param, value):
-    if value is None:
-        return value
-    for s in value.split(","):
-        s = s.strip().lower()
-        if not s:
-            continue
-        if s not in _VALID_SEVERITIES:
-            raise click.BadParameter(
-                f"Invalid severity '{s}'. "
-                f"Choose from: {', '.join(sorted(_VALID_SEVERITIES))}"
-            )
-    return value
-
-
-@main.command()
-@click.argument("path", default=".")
-@click.option("--format", "fmt", type=click.Choice(["table", "json", "sarif"]), default="table")
-@click.option("--severity", default=None, callback=_validate_severity,
-              help="Filter by severity (warning,suggestion,info)")
-@click.option(
-    "--verbose", "-v", is_flag=True, default=False,
-    help="Show all issues (no top-N truncation)",
-)
-@click.option(
-    "--disable", default=None,
-    help="Comma-separated rule IDs to suppress (e.g. HRISK002,OQUAL001)",
-)
-@click.option(
-    "--fail-on",
-    "fail_on",
-    type=click.Choice(["warning", "suggestion", "info"]),
-    default=None,
-    help="Exit 1 if issues at this severity or above (for CI)",
-)
-@click.option(
-    "--save-baseline", is_flag=True, default=False,
-    help="Save current findings as baseline for future --diff",
-)
-@click.option(
-    "--diff", "diff_baseline", is_flag=True, default=False,
-    help="Show only NEW findings not in the saved baseline",
-)
-@click.option(
-    "--baseline-path", default=None,
-    help="Override baseline file path",
-)
-@click.option(
-    "--report", is_flag=True, default=False,
-    help="Show aggregate summary instead of per-file details",
-)
-def scan(path, fmt, severity, verbose, disable, fail_on,
-         save_baseline, diff_baseline, baseline_path, report):
-    """Scan skill and agent files for issues."""
-    from ai_helper.scan import SEVERITY_ORDER, run_scan
-
-    if save_baseline and diff_baseline:
-        click.echo("Error: --save-baseline and --diff are mutually exclusive")
-        sys.exit(1)
-
-    disabled_rules = None
-    if disable:
-        disabled_rules = {
-            r.strip().upper() for r in disable.split(",") if r.strip()
-        }
-
-    counts = run_scan(
-        path=path,
-        fmt=fmt,
-        severity_filter=severity,
-        verbose=verbose,
-        disabled_rules=disabled_rules,
-        fail_on=fail_on,
-        save_baseline=save_baseline,
-        diff_baseline=diff_baseline,
-        baseline_path=baseline_path,
-        report=report,
+@main.command(context_settings={
+    "ignore_unknown_options": True,
+    "allow_extra_args": True,
+})
+@click.argument("path", default=".", required=False)
+@click.pass_context
+def scan(ctx, path):
+    """[Moved] Use skill-lint instead."""
+    click.echo(
+        "The 'ai-helper scan' command has moved to the standalone 'skill-lint' package.\n"
+        "\n"
+        "  Install:  pip install ai-skill-lint\n"
+        "  Usage:    skill-lint [path]\n"
+        "  Repo:     https://github.com/rajusem/skill-lint\n"
     )
-
-    if fail_on is not None:
-        threshold = SEVERITY_ORDER[fail_on]
-        has_failing = any(
-            counts.get(sev, 0) > 0
-            for sev, order in SEVERITY_ORDER.items()
-            if order <= threshold
-        )
-        if has_failing:
-            sys.exit(1)
+    sys.exit(1)
 
 
 @main.group(invoke_without_command=True)

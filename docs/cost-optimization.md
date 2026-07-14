@@ -43,5 +43,5 @@ ai-helper stats                  # cache hit rate, cost per session
 ai-helper stats recommend        # what-if model savings
 ai-helper stats compare          # cross-tool cost comparison
 ai-helper optimize status        # RTK/Ponytail/Headroom status
-ai-helper scan --report          # context file token costs
+skill-lint . --report            # context file token costs (separate tool: pip install ai-skill-lint)
 ```

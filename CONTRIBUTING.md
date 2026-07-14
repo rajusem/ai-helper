@@ -33,7 +33,6 @@ src/ai_helper/
 ├── doctor.py           # Health check command
 ├── config.py           # Config show/set commands
 ├── stats.py            # Usage insights & analytics
-├── scan.py             # Skill file scanner (35+ rules)
 ├── optimize.py         # RTK/Ponytail integration
 └── tools/              # Tool detection layer
     ├── registry.py     # detect_tools(), get_tool()
@@ -79,20 +78,6 @@ This blocks commits containing secrets, API keys, private keys, or large
 binary files.
 
 ## What to Contribute
-
-### Scanner Rules
-
-The scanner (`scan.py`) has 35+ rules across 7 categories. To add a new rule:
-
-1. Add check logic in the appropriate `_check_*` function
-2. Use an existing rule ID prefix (TCOST, STRUCT, DESC, HRISK, OQUAL, FRAME, BPRAC) or CUSTOM_ for custom rules
-3. Add tests in `tests/test_scan.py`
-4. Run against real repos to validate for false positives
-
-When modifying scanner rules:
-- Test against multiple repos, not just one
-- Validate that genuine issues are still caught (no false negatives)
-- Check for false positives with different file structures
 
 ### Tool Detection
 
@@ -159,7 +144,6 @@ Before submitting changes:
 - [ ] Tests pass (`uv run pytest -v`)
 - [ ] Lint clean (`uv run ruff check src/ tests/`)
 - [ ] No secrets in committed files
-- [ ] Scanner changes tested against multiple repos for false positives
 - [ ] Docs updated if behavior changed
 
 For significant changes (new pillars, architecture changes, new tool support):

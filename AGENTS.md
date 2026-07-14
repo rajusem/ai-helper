@@ -19,13 +19,14 @@ uv run pytest -v       # run tests
 uv run ruff check src/ # lint
 ```
 
-## 5 Pillars
+## 4 Pillars
 
-1. `ai-helper scan` — Skill scanner (analyze skills for quality, tokens, hallucination risk)
-2. `ai-helper stats` — Cross-tool usage insights and recommendations
-3. `ai-helper config` — Unified model/MCP config across tools
-4. `ai-helper optimize` — Smart defaults (RTK, Ponytail integration, model recommendations)
-5. `ai-helper init` / `ai-helper doctor` — Developer setup and health check
+1. `ai-helper stats` — Cross-tool usage insights and recommendations
+2. `ai-helper config` — Unified model/MCP config across tools
+3. `ai-helper optimize` — Smart defaults (RTK, Ponytail integration, model recommendations)
+4. `ai-helper init` / `ai-helper doctor` — Developer setup and health check
+
+> The skill scanner originally built here is now a standalone project: [skill-lint](https://github.com/rajusem/skill-lint) (`pip install ai-skill-lint`)
 
 ## Key Design Principles
 
@@ -58,7 +59,6 @@ local-docs/             # Research & reference (gitignored, not committed)
 
 ## Status
 
-- `ai-helper scan` — 35+ rules, SARIF, baseline/diff, config, custom rules, CI exit codes
 - `ai-helper stats` — cross-tool (Claude Code + OpenCode + Cursor), cost estimation
 - `ai-helper stats recommend` — what-if savings by model tier
 - `ai-helper stats compare` — cross-tool cost per session by model tier
@@ -67,4 +67,4 @@ local-docs/             # Research & reference (gitignored, not committed)
 - `ai-helper optimize` — RTK integration (install, status, report, discover)
 - `ai-helper doctor` — detects Claude Code, OpenCode, Cursor
 - `ai-helper init` — planned
-- 308 tests passing
+- 64 tests passing
